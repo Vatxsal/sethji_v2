@@ -14,7 +14,7 @@ export type IntentContext = {
 };
 
 export type OrderContext = IntentContext & {
-  processedId: string;
+  sourceMessageId: string | null;
   catalog: CatalogItem[];
   forceConfirm?: boolean;
 };

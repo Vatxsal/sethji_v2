@@ -14,7 +14,7 @@ export type DispatchParams = {
   messageId: string;
   extracted: ExtractedIntent;
   catalog: CatalogItem[];
-  processedId: string;
+  sourceMessageId?: string | null;
   forcedCustomerId?: string | null;
   forceConfirm?: boolean;
   rawInputType?: "text" | "voice";
@@ -38,7 +38,7 @@ export async function dispatchExtractedIntent(params: DispatchParams): Promise<v
     case "order":
       await handleOrderIntent({
         ...base,
-        processedId: params.processedId,
+        sourceMessageId: params.sourceMessageId ?? params.messageId,
         catalog: params.catalog,
         forceConfirm: params.forceConfirm ?? false,
         rawInputType: params.rawInputType,

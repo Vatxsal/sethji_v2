@@ -38,15 +38,24 @@ async function loadCatalog(shopId: string): Promise<CatalogItem[]> {
   return (data ?? []) as CatalogItem[];
 }
 
-async function getProcessedId(whatsappMessageId: string): Promise<string> {
-  const { data, error } = await getSupabase()
-    .from("processed_messages")
-    .select("id")
-    .eq("whatsapp_message_id", whatsappMessageId)
-    .maybeSingle();
-  if (error) throw error;
-  if (!data) throw new Error(`processed_messages row not found for ${whatsappMessageId}`);
-  return String(data.id);
+function describeError(error: unknown): Record<string, unknown> {
+  if (error && typeof error === "object") {
+    const e = error as {
+      name?: unknown;
+      code?: unknown;
+      message?: unknown;
+      details?: unknown;
+      hint?: unknown;
+    };
+    return {
+      name: e.name ?? null,
+      code: e.code ?? null,
+      message: e.message ?? null,
+      details: e.details ?? null,
+      hint: e.hint ?? null,
+    };
+  }
+  return { error: String(error) };
 }
 
 async function markProcessedDone(messageId: string, shopId: string | null): Promise<void> {
@@ -108,7 +117,6 @@ async function handleInboundText(
 
   const catalog = await loadCatalog(shopId);
   const extracted = await extractIntent(text, catalog, message.id);
-  const processedId = await getProcessedId(message.id);
 
   await dispatchExtractedIntent({
     shopId,
@@ -116,7 +124,6 @@ async function handleInboundText(
     messageId: message.id,
     extracted,
     catalog,
-    processedId,
     rawInputType: opts.rawInputType,
     confidenceScore: opts.confidenceScore,
     transcript: opts.rawInputType === "voice" ? text : null,
@@ -205,7 +212,7 @@ export async function handleMessage(message: IncomingMessage): Promise<void> {
     await sendText(message.from, replyOnlyText());
     await markProcessedDone(message.id, shopId);
   } catch (error) {
-    log(message.id, "handle_error", { error });
+    log(message.id, "handle_error", describeError(error));
     try {
       await sb
         .from("processed_messages")

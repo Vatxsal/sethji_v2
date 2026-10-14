@@ -29,7 +29,7 @@ export type BillableLine = {
 
 export type ConfirmOrderPayload = {
   kind: "order";
-  processedId: string;
+  sourceMessageId: string | null;
   customerId: string | null;
   customerName: string | null;
   paymentMethod: string;
@@ -44,7 +44,7 @@ export type ConfirmOrderPayload = {
 export type PickCustomerPayload = {
   extracted: ExtractedIntent;
   candidates: CustomerRow[];
-  processedId: string;
+  sourceMessageId: string | null;
   rawInputType?: string;
   confidenceScore?: number | null;
   transcript?: string | null;
@@ -118,7 +118,7 @@ export async function saveConfirmedOrder(params: {
   shopId: string;
   senderPhone: string;
   messageId: string;
-  processedId: string;
+  sourceMessageId: string | null;
   customerId: string | null;
   customerName: string | null;
   paymentMethod: string;
@@ -127,7 +127,7 @@ export async function saveConfirmedOrder(params: {
   rawInputType?: string;
   confidenceScore?: number | null;
 }): Promise<void> {
-  const { shopId, senderPhone, messageId, processedId } = params;
+  const { shopId, senderPhone, messageId } = params;
   const sb = getSupabase();
 
   const { data: orderRow, error: orderError } = await sb
@@ -135,7 +135,7 @@ export async function saveConfirmedOrder(params: {
     .insert({
       shop_id: shopId,
       customer_id: params.customerId,
-      source_message_id: processedId,
+      source_message_id: params.sourceMessageId,
       status: "confirmed",
       payment_method: params.paymentMethod,
       total_amount_paise: params.totalPaise,
@@ -196,7 +196,6 @@ export async function saveConfirmedOrder(params: {
 async function askPickCustomer(
   ctx: OrderContext,
   candidates: CustomerRow[],
-  processedId: string,
 ): Promise<void> {
   const balances = await Promise.all(
     candidates.map(async (row) => ({
@@ -213,7 +212,7 @@ async function askPickCustomer(
     {
       extracted: ctx.extracted,
       candidates,
-      processedId,
+      sourceMessageId: ctx.sourceMessageId ?? ctx.messageId,
       rawInputType: ctx.rawInputType ?? "text",
       confidenceScore: ctx.confidenceScore ?? null,
       transcript: ctx.transcript ?? null,
@@ -225,7 +224,8 @@ async function askPickCustomer(
 }
 
 export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
-  const { extracted, catalog, shopId, senderPhone, messageId, processedId } = ctx;
+  const { extracted, catalog, shopId, senderPhone, messageId } = ctx;
+  const sourceMessageId = ctx.sourceMessageId ?? messageId;
   const sb = getSupabase();
 
   const customerNamed = Boolean(extracted.customer_name && extracted.customer_name.trim() !== "");
@@ -249,7 +249,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
   } else if (customerNamed) {
     const resolution = await resolveCustomer(shopId, extracted, messageId);
     if (resolution.status === "ambiguous") {
-      await askPickCustomer(ctx, resolution.candidates, processedId);
+      await askPickCustomer(ctx, resolution.candidates);
       return;
     }
     if (resolution.status === "error") {
@@ -276,7 +276,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
   if (problems.length > 0 || ctx.forceConfirm || lowConfidence) {
     const payload: ConfirmOrderPayload = {
       kind: "order",
-      processedId,
+      sourceMessageId,
       customerId: customer?.id ?? null,
       customerName: customer?.display_name ?? null,
       paymentMethod,
@@ -322,7 +322,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
     shopId,
     senderPhone,
     messageId,
-    processedId,
+    sourceMessageId,
     customerId: customer?.id ?? null,
     customerName: customer?.display_name ?? null,
     paymentMethod,

@@ -3,7 +3,6 @@ import { handleAddItemIntent } from "./addItem";
 import { handleBalanceIntent } from "./balance";
 import type { IntentContext } from "./context";
 import type { CatalogItem, ExtractedIntent } from "./extract";
-import { handleBillIntent } from "./invoice";
 import { handleOrderIntent } from "./order";
 import { handlePaymentIntent } from "./payment";
 import { handleUndoIntent } from "./undo";
@@ -58,9 +57,11 @@ export async function dispatchExtractedIntent(params: DispatchParams): Promise<v
     case "add_item":
       await handleAddItemIntent(base);
       break;
-    case "bill":
+    case "bill": {
+      const { handleBillIntent } = await import("./invoice");
       await handleBillIntent(base);
       break;
+    }
     case "help":
     case "unknown":
       await sendText(params.senderPhone, replyHelp());

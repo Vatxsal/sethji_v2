@@ -3,7 +3,7 @@ import { getSupabase } from "@/lib/supabase";
 import { sendDocument, sendText } from "@/lib/whatsapp/send";
 import { findExistingCustomer, getCustomerById } from "./customers";
 import type { IntentContext } from "./context";
-import { renderInvoicePdf, type InvoicePdfLine } from "./invoicePdf";
+import { buildInvoicePdf, type InvoicePdfLine } from "./invoicePdf";
 import {
   replyAmbiguousCustomers,
   replyCustomerNotFound,
@@ -167,7 +167,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
   if (shopError) throw shopError;
 
   const totalPaise = Number(order.total_amount_paise);
-  const pdfBuffer = await renderInvoicePdf({
+  const pdfBuffer = await buildInvoicePdf({
     shopName: String(shop?.name ?? ""),
     shopAddress: shop?.address ?? null,
     shopGstin: shop?.gstin ?? null,

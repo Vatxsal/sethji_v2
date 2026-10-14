@@ -1,6 +1,7 @@
 import { after, type NextRequest } from "next/server";
 
 import { env } from "@/env";
+import { STALE_MESSAGE_SECONDS } from "@/config";
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
 import { handleMessage } from "@/lib/pipeline/handleMessage";
@@ -76,6 +77,23 @@ export async function POST(request: NextRequest): Promise<Response> {
       return new Response("OK", { status: 200 });
     }
     log(message.id, "insert_error", { error: insertError });
+  }
+
+  const messageEpoch = Number(message.timestamp ?? "");
+  const ageSeconds =
+    Number.isFinite(messageEpoch) && messageEpoch > 0
+      ? Math.floor(Date.now() / 1000) - messageEpoch
+      : null;
+  if (ageSeconds !== null && ageSeconds > STALE_MESSAGE_SECONDS) {
+    log(message.id, "stale", { ageSeconds });
+    const { error: staleError } = await getSupabase()
+      .from("processed_messages")
+      .update({ status: "completed" })
+      .eq("whatsapp_message_id", message.id);
+    if (staleError) {
+      log(message.id, "stale_update_error", { error: staleError });
+    }
+    return new Response("OK", { status: 200 });
   }
 
   after(async () => {

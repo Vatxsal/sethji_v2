@@ -4,6 +4,7 @@ export const STT_MODEL = "whisper-large-v3";
 export const STT_LANGUAGE = "hi";
 export const STT_CONFIDENCE_THRESHOLD = 0.55;
 export const PENDING_TTL_MINUTES = 30;
+export const STALE_MESSAGE_SECONDS = 600;
 export const SUPPORT_TEXT = "Sethji se judne ke liye humse sampark karein.";
 
 export const ENV_KEY_NAMES = [

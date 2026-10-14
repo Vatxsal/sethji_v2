@@ -1,0 +1,72 @@
+import { sendText } from "@/lib/whatsapp/send";
+import { handleAddItemIntent } from "./addItem";
+import { handleBalanceIntent } from "./balance";
+import type { IntentContext } from "./context";
+import type { CatalogItem, ExtractedIntent } from "./extract";
+import { handleBillIntent } from "./invoice";
+import { handleOrderIntent } from "./order";
+import { handlePaymentIntent } from "./payment";
+import { handleUndoIntent } from "./undo";
+import { replyHelp, replyNotImplemented } from "./replies";
+
+export type DispatchParams = {
+  shopId: string;
+  senderPhone: string;
+  messageId: string;
+  extracted: ExtractedIntent;
+  catalog: CatalogItem[];
+  processedId: string;
+  forcedCustomerId?: string | null;
+  forceConfirm?: boolean;
+  rawInputType?: "text" | "voice";
+  confidenceScore?: number | null;
+  transcript?: string | null;
+};
+
+export async function dispatchExtractedIntent(params: DispatchParams): Promise<void> {
+  const base: IntentContext = {
+    shopId: params.shopId,
+    senderPhone: params.senderPhone,
+    messageId: params.messageId,
+    extracted: params.extracted,
+    forcedCustomerId: params.forcedCustomerId ?? null,
+    rawInputType: params.rawInputType ?? "text",
+    confidenceScore: params.confidenceScore ?? null,
+    transcript: params.transcript ?? null,
+  };
+
+  switch (params.extracted.intent) {
+    case "order":
+      await handleOrderIntent({
+        ...base,
+        processedId: params.processedId,
+        catalog: params.catalog,
+        forceConfirm: params.forceConfirm ?? false,
+        rawInputType: params.rawInputType,
+        confidenceScore: params.confidenceScore,
+      });
+      break;
+    case "payment":
+      await handlePaymentIntent(base);
+      break;
+    case "balance":
+      await handleBalanceIntent(base);
+      break;
+    case "undo":
+      await handleUndoIntent(base);
+      break;
+    case "add_item":
+      await handleAddItemIntent(base);
+      break;
+    case "bill":
+      await handleBillIntent(base);
+      break;
+    case "help":
+    case "unknown":
+      await sendText(params.senderPhone, replyHelp());
+      break;
+    default:
+      await sendText(params.senderPhone, replyNotImplemented());
+      break;
+  }
+}

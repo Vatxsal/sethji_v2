@@ -1,0 +1,15 @@
+[
+  {
+    "name": "Sharma Kirana Store",
+    "shopkeeper_phone": "9599219668",
+    "gstin": "09ABCDE1234F1Z5",
+    "address": "12, Gandhi Nagar, Lucknow",
+    "catalog": [
+      { "name": "Atta", "price_rupees": 45, "unit": "kg", "gst_rate_percent": 0 },
+      { "name": "Chai Patti", "price_rupees": 120, "unit": "packet", "gst_rate_percent": 5 },
+      { "name": "Sugar", "price_rupees": 46, "unit": "kg", "gst_rate_percent": 5 },
+      { "name": "Mustard Oil", "price_rupees": 170, "unit": "l", "gst_rate_percent": 5 },
+      { "name": "Biscuit", "price_rupees": 10, "unit": "packet", "gst_rate_percent": 18 }
+    ]
+  }
+]

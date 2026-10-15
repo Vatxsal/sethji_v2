@@ -2,13 +2,34 @@ import { log } from "@/lib/log";
 import { sendText } from "@/lib/whatsapp/send";
 import { createCustomer, getCustomerById, normalizeName, type CustomerRow } from "./customers";
 import type { CatalogItem } from "./extract";
-import { saveConfirmedOrder, type ConfirmOrderPayload, type PickCustomerPayload } from "./order";
+import {
+  saveConfirmedOrder,
+  type ConfirmOrderPayload,
+  type NameAwaitPayload,
+  type PickCustomerPayload,
+} from "./order";
 import { recordPayment, type ConfirmPaymentPayload } from "./payment";
 import { getPendingById, resolvePending, type PendingActionRow } from "./pending";
 import { replyCancelled, replyError, replyPendingExpired } from "./replies";
 import { dispatchExtractedIntent } from "./dispatch";
 
 type AnyConfirmPayload = ConfirmOrderPayload | ConfirmPaymentPayload;
+
+const COMMAND_WORDS = new Set([
+  "help",
+  "undo",
+  "balance",
+  "bill",
+  "naya",
+  "new",
+  "haan",
+  "yes",
+  "ok",
+  "cancel",
+  "item",
+]);
+
+const NAME_PARTICLES = new Set(["ka", "ko", "ne", "ji", "bhai"]);
 
 function asConfirmPayload(payload: unknown): AnyConfirmPayload | null {
   if (!payload || typeof payload !== "object") return null;
@@ -103,6 +124,50 @@ export async function handleButtonReply(params: {
   }
 
   await sendText(params.senderPhone, replyPendingExpired());
+}
+
+function isNameOnlyReply(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === "" || /\d/.test(trimmed)) return false;
+  const words = trimmed.split(/\s+/);
+  if (words.length < 1 || words.length > 3) return false;
+  return !COMMAND_WORDS.has(trimmed.toLowerCase());
+}
+
+function cleanNameReply(text: string): string {
+  const kept = text.trim().split(/\s+/).filter((word) => !NAME_PARTICLES.has(word.toLowerCase()));
+  return kept.join(" ").trim();
+}
+
+export async function continueNamePending(params: {
+  pending: PendingActionRow;
+  text: string;
+  shopId: string;
+  senderPhone: string;
+  messageId: string;
+  catalog: CatalogItem[];
+}): Promise<boolean> {
+  const payload = params.pending.payload as NameAwaitPayload | null;
+  const intent = payload?.intent;
+  if (!intent) return false;
+  if (!isNameOnlyReply(params.text)) return false;
+
+  const name = cleanNameReply(params.text);
+  if (!name) return false;
+
+  intent.customer_name = name;
+  await resolvePending(params.pending.id, "done");
+  log(params.messageId, "name_pending_resolved", { name });
+
+  await dispatchExtractedIntent({
+    shopId: params.shopId,
+    senderPhone: params.senderPhone,
+    messageId: params.messageId,
+    extracted: intent,
+    catalog: params.catalog,
+    sourceMessageId: payload.sourceMessageId ?? null,
+  });
+  return true;
 }
 
 export async function continuePickPending(params: {

@@ -22,11 +22,11 @@ export function replyAmbiguousCustomers(): string {
 }
 
 export function replyUdhaarNeedsCustomer(): string {
-  return "Udhaar kiska? Naam ke saath bhejein.";
+  return "Udhaar kiska? Sirf naam bhejein.";
 }
 
-export function replyUnbillableItems(itemNames: string[]): string {
-  return `Ye items bill nahi kar paaya: ${itemNames.join(", ")}. Catalog name ya unit check karein.`;
+export function replyItemNotInCatalog(itemName: string): string {
+  return `${itemName} aapki list me nahi hai. Add karne ke liye: add item ${itemName} <price> rupaye <unit>`;
 }
 
 export function replyOrderSummary(input: {

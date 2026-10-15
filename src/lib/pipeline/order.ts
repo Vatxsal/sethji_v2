@@ -12,10 +12,10 @@ import {
   replyAmbiguousCustomers,
   replyConfirmSummary,
   replyError,
+  replyItemNotInCatalog,
   replyOrderSummary,
   replyPickCustomerList,
   replyUdhaarNeedsCustomer,
-  replyUnbillableItems,
 } from "./replies";
 
 export type BillableLine = {
@@ -48,6 +48,12 @@ export type PickCustomerPayload = {
   rawInputType?: string;
   confidenceScore?: number | null;
   transcript?: string | null;
+};
+
+export type NameAwaitPayload = {
+  awaiting: "name";
+  intent: ExtractedIntent;
+  sourceMessageId: string | null;
 };
 
 function convertQuantity(quantity: number, from: string, to: string): number | null {
@@ -234,6 +240,17 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
 
   if (paymentMethod === "udhaar" && !customerNamed) {
     log(messageId, "order_no_customer", {});
+    await createPending(
+      shopId,
+      senderPhone,
+      "pick_customer",
+      {
+        awaiting: "name",
+        intent: extracted,
+        sourceMessageId,
+      } satisfies NameAwaitPayload,
+      messageId,
+    );
     await sendText(senderPhone, replyUdhaarNeedsCustomer());
     return;
   }
@@ -262,7 +279,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
   const { lines, problems } = buildLines(extracted, catalog);
   if (lines.length === 0) {
     log(messageId, "order_unbillable", { problems });
-    await sendText(senderPhone, replyUnbillableItems(problems));
+    await sendText(senderPhone, replyItemNotInCatalog(problems[0] ?? "item"));
     return;
   }
 

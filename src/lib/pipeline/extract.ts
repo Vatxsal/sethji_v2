@@ -80,6 +80,14 @@ function buildSystemPrompt(catalog: CatalogItem[]): string {
     '- "udhaar" or "khata" or "baaki" means payment_method "udhaar"; "cash" or "nagad" means "cash"; "paytm" or "gpay" or "upi" means "upi".',
     "- If no payment method is stated, set payment_method to null.",
     "- For payment intent put the amount in amount_rupees.",
+    '- "swayam" means "self" in Hindi but is also a common first name. Treat it, and any word that can be both a Hindi word and a name (swayam, prem, anand, kishan, ashok, om), as customer_name when it appears next to udhaar, ko, ka, ne, or a payment word. The shopkeeper never means themselves; there is always a customer.',
+    '- Any word that is not a catalog item, quantity, unit or command word and sits next to "udhaar" is the customer_name.',
+    "Few-shot examples:",
+    '"1 kilo aata swayam udhaar" -> intent order, customer_name "Swayam", payment_method "udhaar", item Atta 1 kg',
+    '"1 kilo aata Swayam udhaar" -> identical output',
+    '"swayam ko 2 kilo sugar udhaar" -> intent order, customer_name "Swayam", item Sugar 2 kg',
+    '"Rahul ne 200 diye" -> intent payment, customer_name "Rahul", amount_rupees 200',
+    '"swayam ka hisaab" -> intent balance, customer_name "Swayam"',
     "Catalog (name (unit)):",
     catalogLines || "(empty)",
   ].join("\n");
@@ -163,27 +171,28 @@ export async function extractIntent(
   const systemPrompt = buildSystemPrompt(catalog);
 
   try {
-    const parsed = parseIntentJson(await groqExtract(systemPrompt, text));
+    const raw = await groqExtract(systemPrompt, text);
+    const parsed = parseIntentJson(raw);
     if (parsed) {
       log(msgId, "extract", { source: "groq", intent: parsed.intent });
       return parsed;
     }
-    log(msgId, "extract", { source: "groq", invalid: true });
+    log(msgId, "extract_fail", { source: "groq", raw: raw.slice(0, 500) });
   } catch (error) {
     log(msgId, "extract_groq", { error });
   }
 
   try {
-    const parsed = parseIntentJson(await geminiExtract(systemPrompt, text));
+    const raw = await geminiExtract(systemPrompt, text);
+    const parsed = parseIntentJson(raw);
     if (parsed) {
       log(msgId, "extract", { source: "gemini", intent: parsed.intent });
       return parsed;
     }
-    log(msgId, "extract", { source: "gemini", invalid: true });
+    log(msgId, "extract_fail", { source: "gemini", raw: raw.slice(0, 500) });
   } catch (error) {
     log(msgId, "extract_gemini", { error });
   }
 
-  log(msgId, "extract_fail", { text });
   return emptyIntent();
 }

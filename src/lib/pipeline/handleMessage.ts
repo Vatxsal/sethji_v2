@@ -3,7 +3,7 @@ import { getSupabase } from "@/lib/supabase";
 import { downloadMedia } from "@/lib/whatsapp/media";
 import type { IncomingMessage } from "@/lib/whatsapp/parse";
 import { markRead, sendText } from "@/lib/whatsapp/send";
-import { continuePickPending, handleButtonReply, runConfirmedOrder } from "./confirm";
+import { continueNamePending, continuePickPending, handleButtonReply, runConfirmedOrder } from "./confirm";
 import { dispatchExtractedIntent } from "./dispatch";
 import { extractIntent, type CatalogItem } from "./extract";
 import { getOpenPending, resolvePending } from "./pending";
@@ -89,20 +89,20 @@ async function handleInboundText(
   const pending = await getOpenPending(shopId, senderPhone);
 
   if (pending && pending.action_type === "pick_customer") {
-    const continued = await continuePickPending({
-      pending,
-      text,
-      shopId,
-      senderPhone,
-      messageId: message.id,
-      catalog: await loadCatalog(shopId),
-    });
+    const awaitingName =
+      ((pending.payload as { awaiting?: string } | null)?.awaiting ?? null) === "name";
+    const catalog = await loadCatalog(shopId);
+    const continued = awaitingName
+      ? await continueNamePending({ pending, text, shopId, senderPhone, messageId: message.id, catalog })
+      : await continuePickPending({ pending, text, shopId, senderPhone, messageId: message.id, catalog });
     if (continued) {
       await markProcessedDone(message.id, shopId);
       return;
     }
     await resolvePending(pending.id, "cancelled");
-    log(message.id, "pick_cancelled", { pendingId: pending.id });
+    log(message.id, awaitingName ? "name_pending_cancelled" : "pick_cancelled", {
+      pendingId: pending.id,
+    });
   } else if (pending && pending.action_type === "confirm_action" && isConfirmText(text)) {
     await runConfirmedOrder({ pending, shopId, senderPhone, messageId: message.id });
     await markProcessedDone(message.id, shopId);

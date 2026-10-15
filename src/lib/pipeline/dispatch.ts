@@ -6,7 +6,7 @@ import type { CatalogItem, ExtractedIntent } from "./extract";
 import { handleOrderIntent } from "./order";
 import { handlePaymentIntent } from "./payment";
 import { handleUndoIntent } from "./undo";
-import { replyHelp, replyNotImplemented } from "./replies";
+import { replyExtractionFailed, replyHelp, replyNotImplemented } from "./replies";
 
 export type DispatchParams = {
   shopId: string;
@@ -63,8 +63,10 @@ export async function dispatchExtractedIntent(params: DispatchParams): Promise<v
       break;
     }
     case "help":
-    case "unknown":
       await sendText(params.senderPhone, replyHelp());
+      break;
+    case "unknown":
+      await sendText(params.senderPhone, replyExtractionFailed());
       break;
     default:
       await sendText(params.senderPhone, replyNotImplemented());

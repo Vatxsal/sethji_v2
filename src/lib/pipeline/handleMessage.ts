@@ -8,6 +8,7 @@ import { dispatchExtractedIntent } from "./dispatch";
 import { extractIntent, type CatalogItem } from "./extract";
 import { getOpenPending, resolvePending } from "./pending";
 import { saveVoiceNote, transcribeVoice } from "./stt";
+import { fetchKnownCustomers } from "./understand";
 import {
   replyConnected,
   replyError,
@@ -116,7 +117,8 @@ async function handleInboundText(
   }
 
   const catalog = await loadCatalog(shopId);
-  const extracted = await extractIntent(text, catalog, message.id);
+  const customers = await fetchKnownCustomers(shopId);
+  const extracted = await extractIntent(text, catalog, customers, message.id);
 
   await dispatchExtractedIntent({
     shopId,

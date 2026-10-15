@@ -167,3 +167,7 @@ export function replyInvoiceCaption(
 export function replyPendingExpired(): string {
   return "Ye request purani ho gayi, dobara bhejein.";
 }
+
+export function replyExtractionFailed(): string {
+  return "Samajh nahi aaya. Aise bhejein: 2 kilo atta Rahul udhaar";
+}

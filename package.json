@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "seed": "tsx scripts/seed.ts",
+    "eval:extract": "tsx scripts/eval-extract.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,0 +1,169 @@
+[
+  {
+    "text": "1 kilo aata, 2 kilo chai swayam udhaar",
+    "intent": "order",
+    "customer": "Swayam",
+    "payment": "udhaar",
+    "items": [
+      { "catalog_item_name": "Atta", "quantity": 1 },
+      { "catalog_item_name": "Chai Patti", "quantity": 2 }
+    ]
+  },
+  {
+    "text": "swayam ke bill mei 1 kilo aata, 2 kilo chai udhaar daaldo",
+    "intent": "order",
+    "customer": "Swayam",
+    "payment": "udhaar",
+    "items": [
+      { "catalog_item_name": "Atta", "quantity": 1 },
+      { "catalog_item_name": "Chai Patti", "quantity": 2 }
+    ]
+  },
+  {
+    "text": "swayam udhaar mei 1 kilo aata aur 2 kilo chai daaldo",
+    "intent": "order",
+    "customer": "Swayam",
+    "payment": "udhaar",
+    "items": [
+      { "catalog_item_name": "Atta", "quantity": 1 },
+      { "catalog_item_name": "Chai Patti", "quantity": 2 }
+    ]
+  },
+  {
+    "text": "1 kilo aata, Swayam udhaar",
+    "intent": "order",
+    "customer": "Swayam",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Atta", "quantity": 1 }]
+  },
+  {
+    "text": "SWAYAM ko 1 kg atta udhaar",
+    "intent": "order",
+    "customer": "Swayam",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Atta", "quantity": 1 }]
+  },
+  {
+    "text": "rahul ko 2 kilo sugar cash",
+    "intent": "order",
+    "customer": "Rahul",
+    "payment": "cash",
+    "items": [{ "catalog_item_name": "Sugar", "quantity": 2 }]
+  },
+  {
+    "text": "aadha kilo sugar utkarsh udhaar",
+    "intent": "order",
+    "customer": "Utkarsh",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Sugar", "quantity": 0.5 }]
+  },
+  {
+    "text": "utkarsh ke khate me 1 packet maggi likh do",
+    "intent": "order",
+    "customer": "Utkarsh",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Maggi", "quantity": 1 }]
+  },
+  {
+    "text": "2 maggi aur 1 tel rahul udhar",
+    "intent": "order",
+    "customer": "Rahul",
+    "payment": "udhaar",
+    "items": [
+      { "catalog_item_name": "Maggi", "quantity": 2 },
+      { "catalog_item_name": "Tel", "quantity": 1 }
+    ]
+  },
+  {
+    "text": "dedh kilo atta rahul udhaar",
+    "intent": "order",
+    "customer": "Rahul",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Atta", "quantity": 1.5 }]
+  },
+  {
+    "text": "do kilo chini swayam udhaar",
+    "intent": "order",
+    "customer": "Swayam",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Sugar", "quantity": 2 }]
+  },
+  {
+    "text": "राहुल को 2 किलो आटा उधार",
+    "intent": "order",
+    "customer": "Rahul",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Atta", "quantity": 2 }]
+  },
+  {
+    "text": "swayam ke bill mei 1 kilo aata add krdo",
+    "intent": "order",
+    "customer": "Swayam",
+    "payment": "-",
+    "items": [{ "catalog_item_name": "Atta", "quantity": 1 }]
+  },
+  {
+    "text": "1 kg aloo udhaar",
+    "intent": "order",
+    "customer": null,
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": null, "quantity": 1 }]
+  },
+  {
+    "text": "rahul ne 200 diye",
+    "intent": "payment",
+    "customer": "Rahul",
+    "payment": "-",
+    "amount_rupees": 200
+  },
+  {
+    "text": "swayam ne 500 rupaye de diye",
+    "intent": "payment",
+    "customer": "Swayam",
+    "payment": "-",
+    "amount_rupees": 500
+  },
+  {
+    "text": "rahul ka hisaab",
+    "intent": "balance",
+    "customer": "Rahul",
+    "payment": null
+  },
+  {
+    "text": "swayam ka kitna baaki hai",
+    "intent": "balance",
+    "customer": "Swayam",
+    "payment": null
+  },
+  {
+    "text": "hisaab",
+    "intent": "balance",
+    "customer": null,
+    "payment": null
+  },
+  {
+    "text": "undo",
+    "intent": "undo",
+    "customer": null,
+    "payment": null
+  },
+  {
+    "text": "galti ho gayi last wala hata do",
+    "intent": "undo",
+    "customer": null,
+    "payment": null
+  },
+  {
+    "text": "rahul ka bill",
+    "intent": "bill",
+    "customer": "Rahul",
+    "payment": null
+  },
+  {
+    "text": "add item rice 50 rupaye kg",
+    "intent": "add_item",
+    "customer": null,
+    "payment": null,
+    "new_item": { "name": "rice", "price_rupees": 50, "unit": "kg" }
+  }
+]

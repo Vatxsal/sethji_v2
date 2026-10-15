@@ -14,7 +14,22 @@ export type CustomerResolution =
   | { status: "resolved"; customer: CustomerRow }
   | { status: "none" }
   | { status: "ambiguous"; candidates: CustomerRow[] }
+  | { status: "invalid_name" }
   | { status: "error"; error: unknown };
+
+const NAME_ALLOWED = /^[\p{L}\s.'.]+$/u;
+const MAX_NAME_LENGTH = 40;
+
+export function sanitizeCustomerName(raw: string): string | null {
+  const collapsed = raw.trim().replace(/\s+/g, " ");
+  if (collapsed.length === 0 || collapsed.length > MAX_NAME_LENGTH) return null;
+  if (!NAME_ALLOWED.test(collapsed)) return null;
+  const titled = collapsed
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+  return titled.slice(0, MAX_NAME_LENGTH);
+}
 
 export function normalizeName(name: string): string {
   let out = name.toLowerCase();
@@ -56,13 +71,15 @@ export async function createCustomer(
   displayName: string,
   normalizedKey: string,
   disambiguator: string | null,
-): Promise<CustomerRow> {
+): Promise<CustomerRow | null> {
+  const display = sanitizeCustomerName(displayName);
+  if (!display) return null;
   const { data, error } = await getSupabase()
     .from("customers")
     .insert({
       shop_id: shopId,
-      display_name: displayName,
-      normalized_name_key: normalizedKey,
+      display_name: display,
+      normalized_name_key: normalizeName(display),
       disambiguator,
     })
     .select("id, display_name, disambiguator")
@@ -95,7 +112,7 @@ async function recordIdentityMatch(
 export type ExistingCustomerResolution =
   | { status: "resolved"; customer: CustomerRow }
   | { status: "not_found" }
-  | { status: "ambiguous" }
+  | { status: "ambiguous"; candidates: CustomerRow[] }
   | { status: "error"; error: unknown };
 
 export async function findExistingCustomer(
@@ -115,7 +132,7 @@ export async function findExistingCustomer(
       return { status: "resolved", customer: candidates[0] };
     }
     log(msgId, "name_ambiguous", { count: candidates.length });
-    return { status: "ambiguous" };
+    return { status: "ambiguous", candidates };
   } catch (error) {
     log(msgId, "customer_resolve_error", { error });
     return { status: "error", error };
@@ -148,6 +165,10 @@ export async function resolveCustomer(
         return { status: "resolved", customer: found };
       }
       const created = await createCustomer(shopId, name, key, last4);
+      if (!created) {
+        log(msgId, "invalid_name", { name });
+        return { status: "invalid_name" };
+      }
       log(msgId, "new_with_last4", { last4, customerId: created.id });
       await recordIdentityMatch(shopId, name, created.id, "new_with_last4", msgId);
       return { status: "resolved", customer: created };
@@ -155,6 +176,10 @@ export async function resolveCustomer(
 
     if (candidates.length === 0) {
       const created = await createCustomer(shopId, name, key, null);
+      if (!created) {
+        log(msgId, "invalid_name", { name });
+        return { status: "invalid_name" };
+      }
       log(msgId, "customer_auto_new", { name: created.display_name });
       await recordIdentityMatch(shopId, name, created.id, "auto_new", msgId);
       return { status: "resolved", customer: created };

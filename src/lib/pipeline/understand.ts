@@ -208,6 +208,7 @@ export function postProcess(
   const out: ExtractedIntent = {
     ...result,
     items: result.items.map((item) => ({ ...item })),
+    customer_names: [...(result.customer_names ?? [])],
   };
   const known = customerKeyMap(customers);
 
@@ -235,12 +236,38 @@ export function postProcess(
 
   if (out.intent === "add_item") {
     out.customer_name = null;
-  } else if (out.customer_name === null) {
-    const candidate = candidateNameFromText(text, catalog, known);
-    if (candidate) out.customer_name = candidate;
+    out.customer_names = [];
   } else {
-    const display = known.get(normalizeNameKey(out.customer_name));
-    if (display) out.customer_name = display;
+    const distinct: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of out.customer_names) {
+      const display = known.get(normalizeNameKey(entry)) ?? entry;
+      const key = normalizeNameKey(display) || display.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        distinct.push(display);
+      }
+    }
+    out.customer_names = distinct;
+
+    if (out.customer_name === null) {
+      if (out.customer_names.length > 0) {
+        out.customer_name = out.customer_names[0];
+      } else {
+        const candidate = candidateNameFromText(text, catalog, known);
+        if (candidate) out.customer_name = candidate;
+      }
+    } else {
+      const display = known.get(normalizeNameKey(out.customer_name));
+      if (display) out.customer_name = display;
+    }
+
+    if (out.customer_name) {
+      const nameKey = normalizeNameKey(out.customer_name);
+      if (!out.customer_names.some((entry) => normalizeNameKey(entry) === nameKey)) {
+        out.customer_names = [out.customer_name, ...out.customer_names];
+      }
+    }
   }
 
   log(msgId, "understand", {

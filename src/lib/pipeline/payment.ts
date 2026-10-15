@@ -1,4 +1,4 @@
-import { STT_CONFIDENCE_THRESHOLD } from "@/config";
+import { LARGE_AMOUNT_PAISE, STT_CONFIDENCE_THRESHOLD } from "@/config";
 import { rupeesToPaise } from "@/lib/money";
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
@@ -7,8 +7,9 @@ import { getCustomerBalance } from "./balances";
 import { findExistingCustomer, getCustomerById, type CustomerRow } from "./customers";
 import type { IntentContext } from "./context";
 import { createPending } from "./pending";
+import { startCustomerPick } from "./order";
 import {
-  replyAmbiguousCustomers,
+  replyAmountInvalid,
   replyConfirmPayment,
   replyCustomerNotFound,
   replyError,
@@ -101,11 +102,17 @@ async function confirmPaymentGate(
 export async function handlePaymentIntent(ctx: IntentContext): Promise<void> {
   const { shopId, senderPhone, extracted } = ctx;
 
-  if (extracted.amount_rupees === null || extracted.amount_rupees <= 0) {
+  if (extracted.amount_rupees === null) {
     await sendText(senderPhone, replyPaymentNeedsAmount());
     return;
   }
+  if (!Number.isFinite(extracted.amount_rupees) || extracted.amount_rupees <= 0) {
+    log(ctx.messageId, "payment_bad_amount", { amount: extracted.amount_rupees });
+    await sendText(senderPhone, replyAmountInvalid());
+    return;
+  }
   const amountPaise = rupeesToPaise(extracted.amount_rupees);
+  const largeAmount = amountPaise > LARGE_AMOUNT_PAISE;
 
   if (ctx.forcedCustomerId) {
     const customer = await getCustomerById(shopId, ctx.forcedCustomerId);
@@ -113,7 +120,7 @@ export async function handlePaymentIntent(ctx: IntentContext): Promise<void> {
       await sendText(senderPhone, replyError());
       return;
     }
-    if (isLowConfidence(ctx)) {
+    if (isLowConfidence(ctx) || largeAmount) {
       await confirmPaymentGate(ctx, customer, amountPaise);
       return;
     }
@@ -133,7 +140,7 @@ export async function handlePaymentIntent(ctx: IntentContext): Promise<void> {
     return;
   }
   if (resolution.status === "ambiguous") {
-    await sendText(senderPhone, replyAmbiguousCustomers());
+    await startCustomerPick(ctx, resolution.candidates);
     return;
   }
   if (resolution.status === "error") {
@@ -141,7 +148,7 @@ export async function handlePaymentIntent(ctx: IntentContext): Promise<void> {
     return;
   }
 
-  if (isLowConfidence(ctx)) {
+  if (isLowConfidence(ctx) || largeAmount) {
     await confirmPaymentGate(ctx, resolution.customer, amountPaise);
     return;
   }

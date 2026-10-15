@@ -28,11 +28,11 @@ const INTENTS = [
 
 const quantityField = z
   .preprocess((value) => {
-    if (value === null || value === undefined || value === "") return 1;
+    if (value === null || value === undefined || value === "") return null;
     const n = typeof value === "number" ? value : Number(String(value).replace(",", "."));
-    return Number.isFinite(n) && n > 0 ? n : 1;
-  }, z.number())
-  .catch(1);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, z.number().nullable())
+  .catch(null);
 
 const unitField = z
   .preprocess((value) => (typeof value === "string" ? value : ""), z.string())
@@ -53,7 +53,7 @@ const intentItemSchema = z
     quantity: quantityField,
     unit: unitField,
   })
-  .catch({ spoken_name: "", catalog_item_name: null, quantity: 1, unit: "" });
+  .catch({ spoken_name: "", catalog_item_name: null, quantity: null, unit: "" });
 
 const PAYMENT_ALIASES: Record<string, string> = {
   udhaar: "udhaar",
@@ -86,6 +86,18 @@ export const extractedIntentSchema = z.object({
       return t === "" ? null : t;
     }, z.string().nullable())
     .catch(null),
+  customer_names: z
+    .preprocess((value) => {
+      if (!Array.isArray(value)) return [];
+      const out: string[] = [];
+      for (const entry of value) {
+        if (typeof entry !== "string") continue;
+        const t = entry.trim();
+        if (t && !out.some((existing) => existing.toLowerCase() === t.toLowerCase())) out.push(t);
+      }
+      return out;
+    }, z.array(z.string()))
+    .catch([]),
   customer_last4: z
     .preprocess((value) => {
       const digits = String(value ?? "").replace(/\D/g, "");
@@ -136,6 +148,7 @@ export function emptyIntent(): ExtractedIntent {
   return {
     intent: "unknown",
     customer_name: null,
+    customer_names: [],
     customer_last4: null,
     items: [],
     payment_method: null,
@@ -157,8 +170,10 @@ function buildSystemPrompt(catalog: CatalogItem[], customers: string[]): string 
     "Output ONLY one JSON object with exactly these keys, always all present:",
     'intent: one of "order","payment","balance","bill","undo","add_item","help","unknown"',
     "customer_name: customer name in Roman script (transliterate Devanagari to Roman), or null",
+    "customer_names: array of ALL distinct customer names mentioned, in order of mention (usually one; more than one only if the message clearly names multiple people)",
     'customer_last4: exactly 4 digits (a string like "3210") if the message contains "<name> <4 digits>", else null',
     "items: array of {spoken_name, catalog_item_name, quantity, unit}",
+    "quantity: a positive number for every item, exactly as said; if no quantity is stated output null; NEVER default to 1; output 0 or negative numbers as-is when that is what was said",
     'payment_method: "cash" or "udhaar" or "upi", or null if not stated',
     "amount_rupees: payment amount in rupees as a number, or null",
     "new_item: {name, price_rupees, unit} for add_item intent, else null",
@@ -171,6 +186,7 @@ function buildSystemPrompt(catalog: CatalogItem[], customers: string[]): string 
     "- add_item: a new catalog item with a price",
     "- help/unknown only as a last resort",
     '- If the message contains quantities or items, the intent is order even when the word "bill" appears ("swayam ke bill mei 1 kilo aata add karo" is an order).',
+    "- If a message mixes a payment with an order, still extract everything: set intent order when items are present, keep amount_rupees, and list all names in customer_names.",
     "Customer name: the person whose account the entry goes to. It may be lowercase or misspelled.",
     "It is the word(s) that are not items, quantities, units, payment words or filler.",
     "If it matches or nearly matches a known customer, output that customer's exact display name; otherwise output the name in Title Case.",
@@ -187,6 +203,8 @@ function buildSystemPrompt(catalog: CatalogItem[], customers: string[]): string 
     '"swayam ke bill mei 1 kilo aata, 2 kilo chai udhaar daaldo" -> identical output',
     '"swayam udhaar mei 1 kilo aata aur 2 kilo chai daaldo" -> identical output',
     '"rahul ne 200 diye" -> intent payment, customer_name "Rahul", amount_rupees 200',
+    '"Rahul ko 1 kilo atta aur Swayam ko 2 kilo sugar udhaar" -> intent order, customer_name "Rahul", customer_names ["Rahul", "Swayam"], items Atta 1 kg, Sugar 2 kg',
+    '"Rahul ne 200 diye aur 1 kilo atta udhaar" -> intent order, customer_name "Rahul", customer_names ["Rahul"], amount_rupees 200, items Atta 1 kg',
     '"swayam ka hisaab" -> intent balance, customer_name "Swayam"',
     '"undo" -> intent undo, everything else null',
     '"add item rice 50 rupaye kg" -> intent add_item, new_item {name: "rice", price_rupees: 50, unit: "kg"}',

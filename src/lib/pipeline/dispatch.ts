@@ -1,3 +1,4 @@
+import { log } from "@/lib/log";
 import { sendText } from "@/lib/whatsapp/send";
 import { handleAddItemIntent } from "./addItem";
 import { handleBalanceIntent } from "./balance";
@@ -6,7 +7,7 @@ import type { CatalogItem, ExtractedIntent } from "./extract";
 import { handleOrderIntent } from "./order";
 import { handlePaymentIntent } from "./payment";
 import { handleUndoIntent } from "./undo";
-import { replyExtractionFailed, replyHelp, replyNotImplemented } from "./replies";
+import { replyExtractionFailed, replyHelp, replyNotImplemented, replyOneThing } from "./replies";
 
 export type DispatchParams = {
   shopId: string;
@@ -20,6 +21,7 @@ export type DispatchParams = {
   rawInputType?: "text" | "voice";
   confidenceScore?: number | null;
   transcript?: string | null;
+  text?: string | null;
 };
 
 export async function dispatchExtractedIntent(params: DispatchParams): Promise<void> {
@@ -32,7 +34,31 @@ export async function dispatchExtractedIntent(params: DispatchParams): Promise<v
     rawInputType: params.rawInputType ?? "text",
     confidenceScore: params.confidenceScore ?? null,
     transcript: params.transcript ?? null,
+    text: params.text ?? null,
   };
+
+  const distinctNames = new Set(
+    (params.extracted.customer_names ?? []).map((name) => name.trim().toLowerCase()),
+  );
+  if (distinctNames.size > 1) {
+    log(params.messageId, "multi_customer", { names: [...distinctNames] });
+    await sendText(params.senderPhone, replyOneThing());
+    return;
+  }
+  const mixed =
+    (params.extracted.intent === "order" &&
+      params.extracted.amount_rupees !== null &&
+      params.extracted.amount_rupees > 0) ||
+    (params.extracted.intent === "payment" && params.extracted.items.length > 0);
+  if (mixed) {
+    log(params.messageId, "mixed_message", {
+      intent: params.extracted.intent,
+      items: params.extracted.items.length,
+      amount: params.extracted.amount_rupees,
+    });
+    await sendText(params.senderPhone, replyOneThing());
+    return;
+  }
 
   switch (params.extracted.intent) {
     case "order":

@@ -11,6 +11,7 @@ export type IntentContext = {
   rawInputType?: InputType;
   confidenceScore?: number | null;
   transcript?: string | null;
+  text?: string | null;
 };
 
 export type OrderContext = IntentContext & {

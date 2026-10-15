@@ -129,6 +129,7 @@ async function handleInboundText(
     rawInputType: opts.rawInputType,
     confidenceScore: opts.confidenceScore,
     transcript: opts.rawInputType === "voice" ? text : null,
+    text,
   });
 
   await markProcessedDone(message.id, shopId);

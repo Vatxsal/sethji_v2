@@ -1,6 +1,12 @@
 import { log } from "@/lib/log";
 import { sendText } from "@/lib/whatsapp/send";
-import { createCustomer, getCustomerById, normalizeName, type CustomerRow } from "./customers";
+import {
+  createCustomer,
+  getCustomerById,
+  normalizeName,
+  sanitizeCustomerName,
+  type CustomerRow,
+} from "./customers";
 import type { CatalogItem } from "./extract";
 import {
   saveConfirmedOrder,
@@ -10,7 +16,7 @@ import {
 } from "./order";
 import { recordPayment, type ConfirmPaymentPayload } from "./payment";
 import { getPendingById, resolvePending, type PendingActionRow } from "./pending";
-import { replyCancelled, replyError, replyPendingExpired } from "./replies";
+import { replyCancelled, replyError, replyInvalidName, replyPendingExpired } from "./replies";
 import { dispatchExtractedIntent } from "./dispatch";
 
 type AnyConfirmPayload = ConfirmOrderPayload | ConfirmPaymentPayload;
@@ -155,7 +161,15 @@ export async function continueNamePending(params: {
   const name = cleanNameReply(params.text);
   if (!name) return false;
 
+  if (!sanitizeCustomerName(name)) {
+    await resolvePending(params.pending.id, "cancelled");
+    log(params.messageId, "name_pending_invalid", { name });
+    await sendText(params.senderPhone, replyInvalidName());
+    return true;
+  }
+
   intent.customer_name = name;
+  intent.customer_names = [name];
   await resolvePending(params.pending.id, "done");
   log(params.messageId, "name_pending_resolved", { name });
 
@@ -206,6 +220,12 @@ export async function continuePickPending(params: {
     const name = extracted.customer_name?.trim();
     if (!name) return false;
     const created = await createCustomer(params.shopId, name, normalizeName(name), null);
+    if (!created) {
+      await resolvePending(params.pending.id, "cancelled");
+      log(params.messageId, "pick_new_invalid_name", { name });
+      await sendText(params.senderPhone, replyInvalidName());
+      return true;
+    }
     customerId = created.id;
   } else {
     customerId = (chosen as CustomerRow).id;

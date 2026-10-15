@@ -4,8 +4,8 @@ import { sendDocument, sendText } from "@/lib/whatsapp/send";
 import { findExistingCustomer, getCustomerById } from "./customers";
 import type { IntentContext } from "./context";
 import { buildInvoicePdf, type InvoicePdfLine } from "./invoicePdf";
+import { startCustomerPick } from "./order";
 import {
-  replyAmbiguousCustomers,
   replyCustomerNotFound,
   replyError,
   replyInvoiceCaption,
@@ -124,7 +124,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
       return;
     }
     if (resolution.status === "ambiguous") {
-      await sendText(senderPhone, replyAmbiguousCustomers());
+      await startCustomerPick(ctx, resolution.candidates);
       return;
     }
     if (resolution.status === "error") {

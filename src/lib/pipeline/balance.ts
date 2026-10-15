@@ -4,13 +4,17 @@ import { sendText } from "@/lib/whatsapp/send";
 import { getCustomerBalance } from "./balances";
 import { findExistingCustomer, getCustomerById } from "./customers";
 import type { IntentContext } from "./context";
+import { startCustomerPick } from "./order";
 import {
-  replyAmbiguousCustomers,
   replyBalance,
+  replyBalanceNoChange,
   replyCustomerNotFound,
   replyError,
   replyShopBalance,
 } from "./replies";
+
+const BALANCE_MODIFY_PATTERN =
+  /\b(set|zero|clear|reset|waive|khatam)\b|(^|\s)0\s+kar\b/i;
 
 type BalanceRow = { customer_id: string | null; balance_paise: number };
 
@@ -33,6 +37,12 @@ export async function handleBalanceIntent(ctx: IntentContext): Promise<void> {
   const { shopId, senderPhone, messageId, extracted } = ctx;
   const name = extracted.customer_name?.trim() || null;
 
+  if (ctx.text && BALANCE_MODIFY_PATTERN.test(ctx.text)) {
+    log(messageId, "balance_modify_blocked", { text: ctx.text });
+    await sendText(senderPhone, replyBalanceNoChange());
+    return;
+  }
+
   if (ctx.forcedCustomerId) {
     const customer = await getCustomerById(shopId, ctx.forcedCustomerId);
     if (!customer) {
@@ -52,7 +62,7 @@ export async function handleBalanceIntent(ctx: IntentContext): Promise<void> {
       return;
     }
     if (resolution.status === "ambiguous") {
-      await sendText(senderPhone, replyAmbiguousCustomers());
+      await startCustomerPick(ctx, resolution.candidates);
       return;
     }
     if (resolution.status === "error") {

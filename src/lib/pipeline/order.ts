@@ -1,20 +1,21 @@
-import { STT_CONFIDENCE_THRESHOLD } from "@/config";
+import { STT_CONFIDENCE_THRESHOLD, LARGE_AMOUNT_PAISE } from "@/config";
 import { formatPaise, formatQuantity } from "@/lib/money";
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
 import { sendButtons, sendText } from "@/lib/whatsapp/send";
 import { getCustomerBalance } from "./balances";
 import { getCustomerById, resolveCustomer, type CustomerRow } from "./customers";
-import type { OrderContext } from "./context";
+import type { IntentContext, OrderContext } from "./context";
 import type { CatalogItem, ExtractedIntent } from "./extract";
 import { createPending } from "./pending";
 import {
-  replyAmbiguousCustomers,
   replyConfirmSummary,
   replyError,
+  replyInvalidName,
   replyItemNotInCatalog,
   replyOrderSummary,
   replyPickCustomerList,
+  replyQuantityUnclear,
   replyUdhaarNeedsCustomer,
 } from "./replies";
 
@@ -90,7 +91,7 @@ function buildLines(
       problems.push(spoken);
       continue;
     }
-    if (!Number.isFinite(item.quantity) || item.quantity <= 0) {
+    if (item.quantity === null || !Number.isFinite(item.quantity) || item.quantity <= 0) {
       problems.push(spoken);
       continue;
     }
@@ -110,7 +111,19 @@ function buildLines(
     });
   }
 
-  return { lines, problems };
+  const merged = new Map<string, BillableLine>();
+  for (const line of lines) {
+    const key = `${line.catalogItemId}|${line.unit}`;
+    const existing = merged.get(key);
+    if (existing) {
+      existing.quantity = Math.round((existing.quantity + line.quantity) * 1000) / 1000;
+      existing.lineTotalPaise = Math.round(existing.quantity * existing.unitPricePaise);
+    } else {
+      merged.set(key, { ...line });
+    }
+  }
+
+  return { lines: [...merged.values()], problems };
 }
 
 function describeLines(lines: BillableLine[]): string[] {
@@ -199,8 +212,8 @@ export async function saveConfirmedOrder(params: {
   );
 }
 
-async function askPickCustomer(
-  ctx: OrderContext,
+export async function startCustomerPick(
+  ctx: IntentContext,
   candidates: CustomerRow[],
 ): Promise<void> {
   const balances = await Promise.all(
@@ -218,7 +231,7 @@ async function askPickCustomer(
     {
       extracted: ctx.extracted,
       candidates,
-      sourceMessageId: ctx.sourceMessageId ?? ctx.messageId,
+      sourceMessageId: ctx.messageId,
       rawInputType: ctx.rawInputType ?? "text",
       confidenceScore: ctx.confidenceScore ?? null,
       transcript: ctx.transcript ?? null,
@@ -233,6 +246,15 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
   const { extracted, catalog, shopId, senderPhone, messageId } = ctx;
   const sourceMessageId = ctx.sourceMessageId ?? messageId;
   const sb = getSupabase();
+
+  for (const item of extracted.items) {
+    if (item.quantity === null || !Number.isFinite(item.quantity) || item.quantity <= 0) {
+      const spoken = item.spoken_name || item.catalog_item_name || "item";
+      log(messageId, "order_bad_quantity", { item: spoken, quantity: item.quantity });
+      await sendText(senderPhone, replyQuantityUnclear(spoken));
+      return;
+    }
+  }
 
   const customerNamed = Boolean(extracted.customer_name && extracted.customer_name.trim() !== "");
   let paymentMethod = extracted.payment_method;
@@ -266,7 +288,11 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
   } else if (customerNamed) {
     const resolution = await resolveCustomer(shopId, extracted, messageId);
     if (resolution.status === "ambiguous") {
-      await askPickCustomer(ctx, resolution.candidates);
+      await startCustomerPick(ctx, resolution.candidates);
+      return;
+    }
+    if (resolution.status === "invalid_name") {
+      await sendText(senderPhone, replyInvalidName());
       return;
     }
     if (resolution.status === "error") {
@@ -290,7 +316,9 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
     ctx.confidenceScore !== undefined &&
     ctx.confidenceScore < STT_CONFIDENCE_THRESHOLD;
 
-  if (problems.length > 0 || ctx.forceConfirm || lowConfidence) {
+  const largeAmount = totalPaise > LARGE_AMOUNT_PAISE;
+
+  if (problems.length > 0 || ctx.forceConfirm || lowConfidence || largeAmount) {
     const payload: ConfirmOrderPayload = {
       kind: "order",
       sourceMessageId,
@@ -316,6 +344,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
       skipped: problems.length,
       force: Boolean(ctx.forceConfirm),
       lowConfidence,
+      largeAmount,
     });
     await sendButtons(
       senderPhone,

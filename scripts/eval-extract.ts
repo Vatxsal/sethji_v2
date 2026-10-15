@@ -5,12 +5,13 @@ import { config } from "dotenv";
 
 config({ path: path.join(process.cwd(), ".env.local") });
 
-type ExpectedItem = { catalog_item_name: string | null; quantity: number };
+type ExpectedItem = { catalog_item_name: string | null; quantity: number | null };
 
 type EvalCase = {
   text: string;
   intent: string;
   customer?: string | null;
+  customer_names_count?: number;
   payment?: string | null;
   amount_rupees?: number;
   items?: ExpectedItem[];
@@ -60,6 +61,15 @@ async function main(): Promise<void> {
       }
     }
 
+    if (testCase.customer_names_count !== undefined) {
+      const actualCount = actual.customer_names.length;
+      if (actualCount !== testCase.customer_names_count) {
+        diffs.push(
+          `customer_names_count: expected ${testCase.customer_names_count}, got ${actualCount} (${JSON.stringify(actual.customer_names)})`,
+        );
+      }
+    }
+
     if (testCase.payment !== undefined) {
       const expectedPayment = testCase.payment;
       const actualPayment = actual.payment_method;
@@ -97,7 +107,16 @@ async function main(): Promise<void> {
               }`,
             );
           }
-          if (Number(actualItem.quantity) !== expectedItem.quantity) {
+          if (expectedItem.quantity === null) {
+            const actualQuantity = actualItem.quantity;
+            const invalid =
+              actualQuantity === null ||
+              !Number.isFinite(Number(actualQuantity)) ||
+              Number(actualQuantity) <= 0;
+            if (!invalid) {
+              diffs.push(`items[${i}].quantity: expected null (invalid), got ${actualQuantity}`);
+            }
+          } else if (Number(actualItem.quantity) !== expectedItem.quantity) {
             diffs.push(`items[${i}].quantity: expected ${expectedItem.quantity}, got ${actualItem.quantity}`);
           }
         }
@@ -133,6 +152,7 @@ async function main(): Promise<void> {
         expected: JSON.stringify({
           intent: testCase.intent,
           customer: testCase.customer,
+          customer_names_count: testCase.customer_names_count,
           payment: testCase.payment,
           amount: testCase.amount_rupees,
           items: testCase.items,
@@ -141,6 +161,7 @@ async function main(): Promise<void> {
         actual: JSON.stringify({
           intent: actual.intent,
           customer: actual.customer_name,
+          customer_names_count: actual.customer_names.length,
           payment: actual.payment_method,
           amount: actual.amount_rupees,
           items: actual.items.map((item) => ({ name: item.catalog_item_name, quantity: item.quantity })),

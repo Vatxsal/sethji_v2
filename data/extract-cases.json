@@ -165,5 +165,44 @@
     "customer": null,
     "payment": null,
     "new_item": { "name": "rice", "price_rupees": 50, "unit": "kg" }
+  },
+  {
+    "text": "0 kilo aata swayam udhaar",
+    "intent": "order",
+    "customer": "Swayam",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Atta", "quantity": null }]
+  },
+  {
+    "text": "-2 kilo sugar rahul udhaar",
+    "intent": "order",
+    "customer": "Rahul",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Sugar", "quantity": null }]
+  },
+  {
+    "text": "rahul ko 1 kilo aata aur swayam ko 2 kilo sugar udhaar",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 2,
+    "payment": "udhaar",
+    "items": [
+      { "catalog_item_name": "Atta", "quantity": 1 },
+      { "catalog_item_name": "Sugar", "quantity": 2 }
+    ]
+  },
+  {
+    "text": "rahul ne 200 diye aur 1 kilo atta udhaar",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 1,
+    "amount_rupees": 200,
+    "payment": "-",
+    "items": [{ "catalog_item_name": "Atta", "quantity": 1 }]
+  },
+  {
+    "text": "rahul ka balance 0 kar do",
+    "intent": "balance",
+    "customer": "Rahul"
   }
 ]

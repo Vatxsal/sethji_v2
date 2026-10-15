@@ -12,6 +12,11 @@ export function formatPaise(paise: number): string {
   }).format(paise / 100);
 }
 
+export function formatBalance(paise: number): string {
+  if (paise < 0) return `Advance: ${formatPaise(Math.abs(paise))}`;
+  return formatPaise(paise);
+}
+
 export function formatQuantity(quantity: number): string {
   return String(quantity);
 }

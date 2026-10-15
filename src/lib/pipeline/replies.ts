@@ -1,5 +1,5 @@
 import { SUPPORT_TEXT } from "@/config";
-import { formatPaise } from "@/lib/money";
+import { formatBalance, formatPaise } from "@/lib/money";
 
 export function replyNotRegistered(): string {
   return `Aapka number register nahi hua. ${SUPPORT_TEXT}`;
@@ -10,15 +10,11 @@ export function replyConnected(shopName: string): string {
 }
 
 export function replyOnlyText(): string {
-  return "Abhi main sirf text samajh sakta hoon.";
+  return "Abhi main text ya voice note samajh sakta hoon.";
 }
 
 export function replyError(): string {
   return "Kuch gadbad ho gayi, dobara bhejein.";
-}
-
-export function replyAmbiguousCustomers(): string {
-  return "Is naam ke kai customers hain, ye feature agle step me aayega.";
 }
 
 export function replyUdhaarNeedsCustomer(): string {
@@ -39,7 +35,7 @@ export function replyOrderSummary(input: {
   const who = input.customerName ? `${input.customerName} - ` : "";
   const summary = `${who}${input.lines.join(", ")} - ${formatPaise(input.totalPaise)} - ${input.paymentMethod}`;
   if (input.paymentMethod === "udhaar" && input.balancePaise !== null) {
-    return `${summary}\nBalance: ${formatPaise(input.balancePaise)}`;
+    return `${summary}\nBalance: ${formatBalance(input.balancePaise)}`;
   }
   return summary;
 }
@@ -61,11 +57,11 @@ export function replyPaymentNeedsAmount(): string {
 }
 
 export function replyPaymentDone(name: string, amountPaise: number, balancePaise: number): string {
-  return `${name} se ${formatPaise(amountPaise)} mile. Balance: ${formatPaise(balancePaise)}`;
+  return `${name} se ${formatPaise(amountPaise)} mile. Balance: ${formatBalance(balancePaise)}`;
 }
 
 export function replyBalance(customerName: string, balancePaise: number): string {
-  return `${customerName} ka baaki: ${formatPaise(balancePaise)}`;
+  return `${customerName} ka baaki: ${formatBalance(balancePaise)}`;
 }
 
 export function replyShopBalance(
@@ -82,7 +78,7 @@ export function replyUndoNone(): string {
 }
 
 export function replyUndoDone(what: string, balancePaise: number): string {
-  return `Undo ho gaya: ${what}. Balance: ${formatPaise(balancePaise)}`;
+  return `Undo ho gaya: ${what}. Balance: ${formatBalance(balancePaise)}`;
 }
 
 export function replyAddItem(name: string, pricePaise: number, unit: string): string {
@@ -170,4 +166,24 @@ export function replyPendingExpired(): string {
 
 export function replyExtractionFailed(): string {
   return "Samajh nahi aaya. Aise bhejein: 2 kilo atta Rahul udhaar";
+}
+
+export function replyQuantityUnclear(itemName: string): string {
+  return `${itemName} ki quantity samajh nahi aayi. Dobara bhejein, jaise: 2 kilo atta`;
+}
+
+export function replyOneThing(): string {
+  return "Ek message me ek customer aur ek kaam bhejein. Alag alag bhejein.";
+}
+
+export function replyAmountInvalid(): string {
+  return "Amount samajh nahi aaya.";
+}
+
+export function replyBalanceNoChange(): string {
+  return "Balance seedha nahi badla ja sakta. Payment ya undo use karein.";
+}
+
+export function replyInvalidName(): string {
+  return "Naam samajh nahi aaya. Sirf naam bhejein, jaise: Rahul";
 }

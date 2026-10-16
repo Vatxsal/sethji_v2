@@ -4,7 +4,12 @@ import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
 import { sendButtons, sendText } from "@/lib/whatsapp/send";
 import { getCustomerBalance } from "./balances";
-import { getCustomerById, resolveCustomer, type CustomerRow } from "./customers";
+import {
+  customerLabel,
+  getCustomerById,
+  resolveCustomer,
+  type CustomerRow,
+} from "./customers";
 import type { IntentContext, OrderContext } from "./context";
 import type { CatalogItem, ExtractedIntent } from "./extract";
 import { createPending } from "./pending";
@@ -13,10 +18,12 @@ import {
   replyError,
   replyInvalidName,
   replyItemNotInCatalog,
+  replyNewCustomerConfirm,
   replyOrderSummary,
   replyPickCustomerList,
   replyQuantityUnclear,
   replyUdhaarNeedsCustomer,
+  replyUnitMismatch,
 } from "./replies";
 
 export type BillableLine = {
@@ -36,6 +43,20 @@ export type ConfirmOrderPayload = {
   paymentMethod: string;
   lines: BillableLine[];
   skipped: string[];
+  totalPaise: number;
+  rawInputType?: string;
+  confidenceScore?: number | null;
+  transcript?: string | null;
+  prefixLine?: string | null;
+};
+
+export type NewCustomerOrderPayload = {
+  kind: "new_customer_order";
+  name: string;
+  last4: string;
+  sourceMessageId: string | null;
+  paymentMethod: string;
+  lines: BillableLine[];
   totalPaise: number;
   rawInputType?: string;
   confidenceScore?: number | null;
@@ -69,24 +90,56 @@ function convertQuantity(quantity: number, from: string, to: string): number | n
   return null;
 }
 
+const SPOKEN_UNIT: Record<string, string> = {
+  kg: "kilo",
+  g: "gram",
+  l: "litre",
+  ml: "ml",
+  packet: "packet",
+  piece: "piece",
+  dozen: "dozen",
+};
+
+export function matchCatalogItem(
+  spoken: string,
+  catalog: CatalogItem[],
+  byLowerName: Map<string, CatalogItem>,
+): CatalogItem | null {
+  const s = spoken.trim().toLowerCase();
+  if (!s) return null;
+  const exact = byLowerName.get(s);
+  if (exact) return exact;
+  const matches: CatalogItem[] = [];
+  for (const item of catalog) {
+    const name = item.name.toLowerCase();
+    const words = name.split(/\s+/);
+    const prefix = name.startsWith(s) || s.startsWith(name);
+    const contained = words.includes(s) || words.some((w) => w.length > 2 && s.includes(w));
+    if (prefix || contained) matches.push(item);
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
+type UnitMismatch = { itemName: string; catalogUnit: string; spokenUnit: string };
+
 function buildLines(
   extracted: ExtractedIntent,
   catalog: CatalogItem[],
-): { lines: BillableLine[]; problems: string[] } {
+): { lines: BillableLine[]; problems: string[]; unitMismatch: UnitMismatch | null } {
   const byLowerName = new Map<string, CatalogItem>();
   for (const item of catalog) byLowerName.set(item.name.toLowerCase(), item);
 
   const lines: BillableLine[] = [];
   const problems: string[] = [];
+  let unitMismatch: UnitMismatch | null = null;
 
   for (const item of extracted.items) {
     const spoken = item.spoken_name || item.catalog_item_name || "item";
-    const catalogName = item.catalog_item_name;
-    if (!catalogName) {
-      problems.push(spoken);
-      continue;
-    }
-    const row = byLowerName.get(catalogName.toLowerCase());
+    let row = item.catalog_item_name
+      ? byLowerName.get(item.catalog_item_name.toLowerCase()) ?? null
+      : null;
+    if (!row) row = matchCatalogItem(item.catalog_item_name || spoken, catalog, byLowerName);
+    if (!row) row = matchCatalogItem(spoken, catalog, byLowerName);
     if (!row) {
       problems.push(spoken);
       continue;
@@ -95,9 +148,16 @@ function buildLines(
       problems.push(spoken);
       continue;
     }
-    const converted = convertQuantity(item.quantity, item.unit, row.unit_type);
+    const spokenUnit = item.unit || row.unit_type;
+    const converted = convertQuantity(item.quantity, spokenUnit, row.unit_type);
     if (converted === null) {
-      problems.push(spoken);
+      if (!unitMismatch) {
+        unitMismatch = {
+          itemName: row.name,
+          catalogUnit: row.unit_type,
+          spokenUnit: SPOKEN_UNIT[spokenUnit] ?? spokenUnit,
+        };
+      }
       continue;
     }
     const quantity = Math.round(converted * 1000) / 1000;
@@ -123,7 +183,7 @@ function buildLines(
     }
   }
 
-  return { lines: [...merged.values()], problems };
+  return { lines: [...merged.values()], problems, unitMismatch };
 }
 
 function describeLines(lines: BillableLine[]): string[] {
@@ -145,6 +205,7 @@ export async function saveConfirmedOrder(params: {
   totalPaise: number;
   rawInputType?: string;
   confidenceScore?: number | null;
+  prefixLine?: string | null;
 }): Promise<void> {
   const { shopId, senderPhone, messageId } = params;
   const sb = getSupabase();
@@ -208,6 +269,7 @@ export async function saveConfirmedOrder(params: {
       totalPaise: params.totalPaise,
       paymentMethod: params.paymentMethod,
       balancePaise,
+      prefixLine: params.prefixLine ?? null,
     }),
   );
 }
@@ -215,6 +277,7 @@ export async function saveConfirmedOrder(params: {
 export async function startCustomerPick(
   ctx: IntentContext,
   candidates: CustomerRow[],
+  allowNaya = ctx.extracted.intent === "order",
 ): Promise<void> {
   const balances = await Promise.all(
     candidates.map(async (row) => ({
@@ -239,7 +302,7 @@ export async function startCustomerPick(
     ctx.messageId,
   );
 
-  await sendText(ctx.senderPhone, replyPickCustomerList(balances));
+  await sendText(ctx.senderPhone, replyPickCustomerList(balances, allowNaya));
 }
 
 export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
@@ -278,6 +341,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
   }
 
   let customer: CustomerRow | null = null;
+  let justCreatedName: string | null = null;
   if (ctx.forcedCustomerId) {
     customer = await getCustomerById(shopId, ctx.forcedCustomerId);
     if (!customer) {
@@ -288,7 +352,53 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
   } else if (customerNamed) {
     const resolution = await resolveCustomer(shopId, extracted, messageId);
     if (resolution.status === "ambiguous") {
-      await startCustomerPick(ctx, resolution.candidates);
+      await startCustomerPick(ctx, resolution.candidates, true);
+      return;
+    }
+    if (resolution.status === "new_last4_confirm") {
+      const { lines, problems, unitMismatch } = buildLines(extracted, catalog);
+      if (unitMismatch) {
+        log(messageId, "order_unit_mismatch", unitMismatch);
+        await sendText(
+          senderPhone,
+          replyUnitMismatch(unitMismatch.itemName, unitMismatch.catalogUnit, unitMismatch.spokenUnit),
+        );
+        return;
+      }
+      if (lines.length === 0) {
+        log(messageId, "order_unbillable", { problems });
+        await sendText(senderPhone, replyItemNotInCatalog(problems[0] ?? "item"));
+        return;
+      }
+      const totalPaise = lines.reduce((sum, line) => sum + line.lineTotalPaise, 0);
+      const payload: NewCustomerOrderPayload = {
+        kind: "new_customer_order",
+        name: resolution.name,
+        last4: resolution.last4,
+        sourceMessageId,
+        paymentMethod,
+        lines,
+        totalPaise,
+        rawInputType: ctx.rawInputType ?? "text",
+        confidenceScore: ctx.confidenceScore ?? null,
+        transcript: ctx.transcript ?? null,
+      };
+      const pendingId = await createPending(
+        shopId,
+        senderPhone,
+        "confirm_action",
+        payload,
+        messageId,
+      );
+      log(messageId, "new_customer_confirm", { pendingId, name: resolution.name, last4: resolution.last4 });
+      await sendButtons(
+        senderPhone,
+        replyNewCustomerConfirm(resolution.name, resolution.last4),
+        [
+          { id: `confirm:${pendingId}`, title: "Haan, naya banao" },
+          { id: `cancel:${pendingId}`, title: "Cancel" },
+        ],
+      );
       return;
     }
     if (resolution.status === "invalid_name") {
@@ -299,15 +409,29 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
       await sendText(senderPhone, replyError());
       return;
     }
-    if (resolution.status === "resolved") customer = resolution.customer;
+    if (resolution.status === "resolved") {
+      customer = resolution.customer;
+      if (resolution.justCreated) justCreatedName = customer.display_name;
+    }
   }
 
-  const { lines, problems } = buildLines(extracted, catalog);
+  const { lines, problems, unitMismatch } = buildLines(extracted, catalog);
+  if (unitMismatch) {
+    log(messageId, "order_unit_mismatch", unitMismatch);
+    await sendText(
+      senderPhone,
+      replyUnitMismatch(unitMismatch.itemName, unitMismatch.catalogUnit, unitMismatch.spokenUnit),
+    );
+    return;
+  }
   if (lines.length === 0) {
     log(messageId, "order_unbillable", { problems });
     await sendText(senderPhone, replyItemNotInCatalog(problems[0] ?? "item"));
     return;
   }
+
+  const label = customer ? await customerLabel(shopId, customer, messageId) : null;
+  const prefixLine = justCreatedName ? `Naya customer: ${justCreatedName}` : null;
 
   const totalPaise = lines.reduce((sum, line) => sum + line.lineTotalPaise, 0);
 
@@ -323,7 +447,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
       kind: "order",
       sourceMessageId,
       customerId: customer?.id ?? null,
-      customerName: customer?.display_name ?? null,
+      customerName: label,
       paymentMethod,
       lines,
       skipped: problems,
@@ -331,6 +455,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
       rawInputType: ctx.rawInputType ?? "text",
       confidenceScore: ctx.confidenceScore ?? null,
       transcript: ctx.transcript ?? null,
+      prefixLine,
     };
     const pendingId = await createPending(
       shopId,
@@ -349,7 +474,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
     await sendButtons(
       senderPhone,
       replyConfirmSummary({
-        customerName: customer?.display_name ?? null,
+        customerName: label,
         billLines: describeLines(lines),
         skipped: problems,
         totalPaise,
@@ -370,11 +495,12 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
     messageId,
     sourceMessageId,
     customerId: customer?.id ?? null,
-    customerName: customer?.display_name ?? null,
+    customerName: label,
     paymentMethod,
     lines,
     totalPaise,
     rawInputType: ctx.rawInputType,
     confidenceScore: ctx.confidenceScore,
+    prefixLine,
   });
 }

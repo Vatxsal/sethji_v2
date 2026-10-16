@@ -12,6 +12,7 @@ type EvalCase = {
   intent: string;
   customer?: string | null;
   customer_names_count?: number;
+  customer_last4?: string | null;
   payment?: string | null;
   amount_rupees?: number;
   items?: ExpectedItem[];
@@ -67,6 +68,17 @@ async function main(): Promise<void> {
         diffs.push(
           `customer_names_count: expected ${testCase.customer_names_count}, got ${actualCount} (${JSON.stringify(actual.customer_names)})`,
         );
+      }
+    }
+
+    if (testCase.customer_last4 !== undefined) {
+      const actualLast4 = actual.customer_last4;
+      const match =
+        testCase.customer_last4 === null
+          ? actualLast4 === null
+          : actualLast4 === testCase.customer_last4;
+      if (!match) {
+        diffs.push(`customer_last4: expected ${testCase.customer_last4 ?? "null"}, got ${actualLast4 ?? "null"}`);
       }
     }
 
@@ -153,6 +165,7 @@ async function main(): Promise<void> {
           intent: testCase.intent,
           customer: testCase.customer,
           customer_names_count: testCase.customer_names_count,
+          customer_last4: testCase.customer_last4,
           payment: testCase.payment,
           amount: testCase.amount_rupees,
           items: testCase.items,
@@ -162,6 +175,7 @@ async function main(): Promise<void> {
           intent: actual.intent,
           customer: actual.customer_name,
           customer_names_count: actual.customer_names.length,
+          customer_last4: actual.customer_last4,
           payment: actual.payment_method,
           amount: actual.amount_rupees,
           items: actual.items.map((item) => ({ name: item.catalog_item_name, quantity: item.quantity })),

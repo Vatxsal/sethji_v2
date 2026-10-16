@@ -4,7 +4,7 @@ import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
 import { sendButtons, sendText } from "@/lib/whatsapp/send";
 import { getCustomerBalance } from "./balances";
-import { findExistingCustomer, getCustomerById, type CustomerRow } from "./customers";
+import { findExistingCustomer, customerLabel, getCustomerById, type CustomerRow } from "./customers";
 import type { IntentContext } from "./context";
 import { createPending } from "./pending";
 import { startCustomerPick } from "./order";
@@ -51,8 +51,9 @@ export async function recordPayment(params: {
   if (ledgerError) throw ledgerError;
 
   const balancePaise = await getCustomerBalance(customer.id);
+  const label = await customerLabel(shopId, customer, messageId);
   log(messageId, "payment_saved", { customerId: customer.id, amountPaise });
-  await sendText(senderPhone, replyPaymentDone(customer.display_name, amountPaise, balancePaise));
+  await sendText(senderPhone, replyPaymentDone(label, amountPaise, balancePaise));
 }
 
 function isLowConfidence(ctx: IntentContext): boolean {
@@ -84,11 +85,12 @@ async function confirmPaymentGate(
     payload,
     ctx.messageId,
   );
+  const label = await customerLabel(ctx.shopId, customer, ctx.messageId);
   log(ctx.messageId, "payment_gate", { pendingId });
   await sendButtons(
     ctx.senderPhone,
     replyConfirmPayment({
-      customerName: customer.display_name,
+      customerName: label,
       amountPaise,
       transcript: ctx.transcript ?? null,
     }),

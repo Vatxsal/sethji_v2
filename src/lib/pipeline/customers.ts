@@ -11,9 +11,10 @@ export type CustomerRow = {
 };
 
 export type CustomerResolution =
-  | { status: "resolved"; customer: CustomerRow }
+  | { status: "resolved"; customer: CustomerRow; justCreated?: boolean }
   | { status: "none" }
   | { status: "ambiguous"; candidates: CustomerRow[] }
+  | { status: "new_last4_confirm"; name: string; last4: string }
   | { status: "invalid_name" }
   | { status: "error"; error: unknown };
 
@@ -39,6 +40,27 @@ export function normalizeName(name: string): string {
   out = out.replace(/[^a-z]/g, "");
   out = out.replace(/(.)\1+/g, "$1");
   return out;
+}
+
+export async function customerLabel(
+  shopId: string,
+  customer: { id: string; display_name: string; disambiguator: string | null },
+  msgId?: string,
+): Promise<string> {
+  try {
+    const { count, error } = await getSupabase()
+      .from("customers")
+      .select("id", { count: "exact", head: true })
+      .eq("shop_id", shopId)
+      .eq("normalized_name_key", normalizeName(customer.display_name));
+    if (error) throw error;
+    if ((count ?? 0) > 1) {
+      return `${customer.display_name} (${customer.disambiguator ?? "no digits"})`;
+    }
+  } catch (error) {
+    log(msgId, "customer_label_error", { error });
+  }
+  return customer.display_name;
 }
 
 export async function findCandidates(
@@ -88,7 +110,7 @@ export async function createCustomer(
   return data as CustomerRow;
 }
 
-async function recordIdentityMatch(
+export async function recordIdentityMatch(
   shopId: string,
   incomingName: string,
   customerId: string,
@@ -164,6 +186,10 @@ export async function resolveCustomer(
         log(msgId, "name_ambiguous_last4_resolved", { last4 });
         return { status: "resolved", customer: found };
       }
+      if (candidates.length > 0) {
+        log(msgId, "new_last4_confirm_needed", { name, last4 });
+        return { status: "new_last4_confirm", name, last4 };
+      }
       const created = await createCustomer(shopId, name, key, last4);
       if (!created) {
         log(msgId, "invalid_name", { name });
@@ -171,7 +197,7 @@ export async function resolveCustomer(
       }
       log(msgId, "new_with_last4", { last4, customerId: created.id });
       await recordIdentityMatch(shopId, name, created.id, "new_with_last4", msgId);
-      return { status: "resolved", customer: created };
+      return { status: "resolved", customer: created, justCreated: true };
     }
 
     if (candidates.length === 0) {
@@ -182,7 +208,7 @@ export async function resolveCustomer(
       }
       log(msgId, "customer_auto_new", { name: created.display_name });
       await recordIdentityMatch(shopId, name, created.id, "auto_new", msgId);
-      return { status: "resolved", customer: created };
+      return { status: "resolved", customer: created, justCreated: true };
     }
 
     if (candidates.length === 1) {

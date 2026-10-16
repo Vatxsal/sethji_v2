@@ -4,6 +4,7 @@ import {
   createCustomer,
   getCustomerById,
   normalizeName,
+  recordIdentityMatch,
   sanitizeCustomerName,
   type CustomerRow,
 } from "./customers";
@@ -12,14 +13,23 @@ import {
   saveConfirmedOrder,
   type ConfirmOrderPayload,
   type NameAwaitPayload,
+  type NewCustomerOrderPayload,
   type PickCustomerPayload,
 } from "./order";
 import { recordPayment, type ConfirmPaymentPayload } from "./payment";
 import { getPendingById, resolvePending, type PendingActionRow } from "./pending";
-import { replyCancelled, replyError, replyInvalidName, replyPendingExpired } from "./replies";
+import {
+  replyCancelled,
+  replyError,
+  replyInvalidName,
+  replyNayaOnlyForOrders,
+  replyNewCustomerMade,
+  replyPendingExpired,
+  replyPickNoMatch,
+} from "./replies";
 import { dispatchExtractedIntent } from "./dispatch";
 
-type AnyConfirmPayload = ConfirmOrderPayload | ConfirmPaymentPayload;
+type AnyConfirmPayload = ConfirmOrderPayload | ConfirmPaymentPayload | NewCustomerOrderPayload;
 
 const COMMAND_WORDS = new Set([
   "help",
@@ -42,6 +52,7 @@ function asConfirmPayload(payload: unknown): AnyConfirmPayload | null {
   const p = payload as { kind?: string };
   if (p.kind === "order") return payload as ConfirmOrderPayload;
   if (p.kind === "payment") return payload as ConfirmPaymentPayload;
+  if (p.kind === "new_customer_order") return payload as NewCustomerOrderPayload;
   return null;
 }
 
@@ -60,6 +71,36 @@ export async function runConfirmedOrder(params: {
   }
 
   await resolvePending(pending.id, "done");
+
+  if (payload.kind === "new_customer_order") {
+    const created = await createCustomer(
+      shopId,
+      payload.name,
+      normalizeName(payload.name),
+      payload.last4,
+    );
+    if (!created) {
+      await sendText(senderPhone, replyInvalidName());
+      return;
+    }
+    log(messageId, "new_customer_created", { customerId: created.id, last4: payload.last4 });
+    await recordIdentityMatch(shopId, payload.name, created.id, "new_with_last4", messageId);
+    await saveConfirmedOrder({
+      shopId,
+      senderPhone,
+      messageId,
+      sourceMessageId: payload.sourceMessageId ?? null,
+      customerId: created.id,
+      customerName: created.display_name,
+      paymentMethod: payload.paymentMethod,
+      lines: payload.lines,
+      totalPaise: payload.totalPaise,
+      rawInputType: payload.rawInputType,
+      confidenceScore: payload.confidenceScore,
+      prefixLine: replyNewCustomerMade(payload.name, payload.last4),
+    });
+    return;
+  }
 
   if (payload.kind === "payment") {
     const customer = await getCustomerById(shopId, payload.customerId);
@@ -89,6 +130,7 @@ export async function runConfirmedOrder(params: {
     totalPaise: payload.totalPaise,
     rawInputType: payload.rawInputType,
     confidenceScore: payload.confidenceScore,
+    prefixLine: payload.prefixLine ?? null,
   });
 }
 
@@ -203,20 +245,33 @@ export async function continuePickPending(params: {
   const text = params.text.trim().toLowerCase();
   let chosen: CustomerRow | null = null;
   let createNew = false;
+  let noMatch = false;
 
   if (/^\d{4}$/.test(text)) {
     chosen = candidates.find((row) => (row.disambiguator ?? "") === text) ?? null;
+    if (!chosen) noMatch = true;
   } else if (/^\d{1,2}$/.test(text)) {
     const index = Number(text);
     if (index >= 1 && index <= candidates.length) chosen = candidates[index - 1] ?? null;
+    else noMatch = true;
   } else if (text === "naya" || text === "new") {
     createNew = true;
+  } else {
+    return false;
   }
 
-  if (!chosen && !createNew) return false;
+  if (noMatch) {
+    log(params.messageId, "pick_no_match", { text, candidates: candidates.length });
+    await sendText(params.senderPhone, replyPickNoMatch());
+    return true;
+  }
 
-  let customerId: string;
   if (createNew) {
+    if (extracted.intent !== "order") {
+      log(params.messageId, "pick_naya_wrong_intent", { intent: extracted.intent });
+      await sendText(params.senderPhone, replyNayaOnlyForOrders());
+      return true;
+    }
     const name = extracted.customer_name?.trim();
     if (!name) return false;
     const created = await createCustomer(params.shopId, name, normalizeName(name), null);
@@ -226,13 +281,29 @@ export async function continuePickPending(params: {
       await sendText(params.senderPhone, replyInvalidName());
       return true;
     }
-    customerId = created.id;
-  } else {
-    customerId = (chosen as CustomerRow).id;
+    await resolvePending(params.pending.id, "done");
+    log(params.messageId, "pick_resolved", { customerId: created.id, createNew: true });
+    await dispatchExtractedIntent({
+      shopId: params.shopId,
+      senderPhone: params.senderPhone,
+      messageId: params.messageId,
+      extracted,
+      catalog: params.catalog,
+      sourceMessageId: payload.sourceMessageId ?? null,
+      forcedCustomerId: created.id,
+      rawInputType: payload.rawInputType === "voice" ? "voice" : "text",
+      confidenceScore: payload.confidenceScore ?? null,
+      transcript: payload.transcript ?? null,
+    });
+    return true;
   }
 
+  if (!chosen) return false;
+
+  const customerId = chosen.id;
+
   await resolvePending(params.pending.id, "done");
-  log(params.messageId, "pick_resolved", { customerId, createNew });
+  log(params.messageId, "pick_resolved", { customerId, createNew: false });
 
   await dispatchExtractedIntent({
     shopId: params.shopId,

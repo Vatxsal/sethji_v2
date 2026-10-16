@@ -25,19 +25,27 @@ export function replyItemNotInCatalog(itemName: string): string {
   return `${itemName} aapki list me nahi hai. Add karne ke liye: add item ${itemName} <price> rupaye <unit>`;
 }
 
+function balanceLine(paise: number): string {
+  return paise < 0 ? formatBalance(paise) : `Balance: ${formatPaise(paise)}`;
+}
+
 export function replyOrderSummary(input: {
   customerName: string | null;
   lines: string[];
   totalPaise: number;
   paymentMethod: string;
   balancePaise: number | null;
+  prefixLine?: string | null;
 }): string {
   const who = input.customerName ? `${input.customerName} - ` : "";
   const summary = `${who}${input.lines.join(", ")} - ${formatPaise(input.totalPaise)} - ${input.paymentMethod}`;
+  const parts: string[] = [];
+  if (input.prefixLine) parts.push(input.prefixLine);
+  parts.push(summary);
   if (input.paymentMethod === "udhaar" && input.balancePaise !== null) {
-    return `${summary}\nBalance: ${formatBalance(input.balancePaise)}`;
+    parts.push(balanceLine(input.balancePaise));
   }
-  return summary;
+  return parts.join("\n");
 }
 
 export function replyNotImplemented(): string {
@@ -57,7 +65,7 @@ export function replyPaymentNeedsAmount(): string {
 }
 
 export function replyPaymentDone(name: string, amountPaise: number, balancePaise: number): string {
-  return `${name} se ${formatPaise(amountPaise)} mile. Balance: ${formatBalance(balancePaise)}`;
+  return `${name} se ${formatPaise(amountPaise)} mile. ${balanceLine(balancePaise)}`;
 }
 
 export function replyBalance(customerName: string, balancePaise: number): string {
@@ -78,7 +86,7 @@ export function replyUndoNone(): string {
 }
 
 export function replyUndoDone(what: string, balancePaise: number): string {
-  return `Undo ho gaya: ${what}. Balance: ${formatBalance(balancePaise)}`;
+  return `Undo ho gaya: ${what}. ${balanceLine(balancePaise)}`;
 }
 
 export function replyAddItem(name: string, pricePaise: number, unit: string): string {
@@ -105,12 +113,38 @@ export function replyHelp(): string {
 
 export function replyPickCustomerList(
   entries: Array<{ name: string; disambiguator: string | null; balancePaise: number }>,
+  allowNaya = true,
 ): string {
   const lines = entries.map(
     (entry, index) =>
       `${index + 1}) ${entry.name} ${entry.disambiguator ?? "no digits"} - baaki ${formatPaise(entry.balancePaise)}`,
   );
-  return `${lines.join("\n")}\nLast 4 digits ya number bhejein, ya 'naya' likhein.`;
+  const tail = allowNaya
+    ? "Last 4 digits ya number bhejein, ya 'naya' likhein."
+    : "Last 4 digits ya number bhejein.";
+  return `${lines.join("\n")}\n${tail}`;
+}
+
+export function replyPickNoMatch(): string {
+  return "Ye kisi se match nahi hua. Last 4 digits ya number bhejein.";
+}
+
+export function replyNayaOnlyForOrders(): string {
+  return "Naya customer sirf order me ban sakta hai. List me se chunein.";
+}
+
+export function replyNewCustomerConfirm(name: string, last4: string): string {
+  return `Naya customer: ${name} (${last4}). Order uske naam pe save karein?`;
+}
+
+export function replyNewCustomerMade(name: string, last4: string | null): string {
+  return last4
+    ? `Naya customer bana: ${name} (${last4})`
+    : `Naya customer bana: ${name}`;
+}
+
+export function replyUnitMismatch(itemName: string, catalogUnit: string, spokenUnit: string): string {
+  return `${itemName} ${catalogUnit} me bikta hai, aapne ${spokenUnit} bola. Kitne ${catalogUnit}?`;
 }
 
 export function replyCancelled(): string {

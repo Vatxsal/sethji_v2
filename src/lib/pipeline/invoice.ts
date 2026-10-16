@@ -1,7 +1,7 @@
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
 import { sendDocument, sendText } from "@/lib/whatsapp/send";
-import { findExistingCustomer, getCustomerById } from "./customers";
+import { customerLabel, findExistingCustomer, getCustomerById } from "./customers";
 import type { IntentContext } from "./context";
 import { buildInvoicePdf, type InvoicePdfLine } from "./invoicePdf";
 import { startCustomerPick } from "./order";
@@ -107,6 +107,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
 
   let customerId: string | null = null;
   let customerName: string | null = null;
+  let captionName: string | null = null;
 
   const name = extracted.customer_name?.trim() || null;
   if (ctx.forcedCustomerId) {
@@ -117,6 +118,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
     }
     customerId = customer.id;
     customerName = customer.display_name;
+    captionName = await customerLabel(shopId, customer, messageId);
   } else if (name) {
     const resolution = await findExistingCustomer(shopId, name, messageId);
     if (resolution.status === "not_found") {
@@ -133,6 +135,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
     }
     customerId = resolution.customer.id;
     customerName = resolution.customer.display_name;
+    captionName = await customerLabel(shopId, resolution.customer, messageId);
   }
 
   const order = await latestConfirmedOrder(shopId, customerId);
@@ -146,6 +149,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
     const customer = await getCustomerById(shopId, order.customer_id);
     customerName = customer?.display_name ?? null;
     customerId = customerId ?? order.customer_id;
+    if (customer) captionName = await customerLabel(shopId, customer, messageId);
   }
 
   const { data: itemRows, error: itemsError } = await sb
@@ -198,6 +202,6 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
 
   log(messageId, "invoice_sent", { invoiceNumber, orderId: order.id, totalPaise });
 
-  const caption = replyInvoiceCaption(invoiceNumber, customerName, totalPaise);
+  const caption = replyInvoiceCaption(invoiceNumber, captionName ?? customerName, totalPaise);
   await sendDocument(senderPhone, signed.signedUrl, `${invoiceNumber}.pdf`, caption);
 }

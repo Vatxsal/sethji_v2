@@ -204,5 +204,36 @@
     "text": "rahul ka balance 0 kar do",
     "intent": "balance",
     "customer": "Rahul"
+  },
+  {
+    "text": "rahul 7777 ko 2 kilo atta udhaar",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_last4": "7777",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Atta", "quantity": 2 }]
+  },
+  {
+    "text": "swayam 1234 ko 1 packet maggi udhaar",
+    "intent": "order",
+    "customer": "Swayam",
+    "customer_last4": "1234",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Maggi", "quantity": 1 }]
+  },
+  {
+    "text": "utkarsh 9012 ko 1 kilo tel cash",
+    "intent": "order",
+    "customer": "Utkarsh",
+    "customer_last4": "9012",
+    "payment": "cash",
+    "items": [{ "catalog_item_name": "Tel", "quantity": 1 }]
+  },
+  {
+    "text": "2 kilo chai swayam udhaar",
+    "intent": "order",
+    "customer": "Swayam",
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Chai Patti", "quantity": 2 }]
   }
 ]

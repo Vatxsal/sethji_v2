@@ -105,11 +105,13 @@ export async function handlePaymentIntent(ctx: IntentContext): Promise<void> {
   const { shopId, senderPhone, extracted } = ctx;
 
   if (extracted.amount_rupees === null) {
+    ctx.setOutcome?.("not_understood");
     await sendText(senderPhone, replyPaymentNeedsAmount());
     return;
   }
   if (!Number.isFinite(extracted.amount_rupees) || extracted.amount_rupees <= 0) {
     log(ctx.messageId, "payment_bad_amount", { amount: extracted.amount_rupees });
+    ctx.setOutcome?.("refused");
     await sendText(senderPhone, replyAmountInvalid());
     return;
   }
@@ -119,25 +121,30 @@ export async function handlePaymentIntent(ctx: IntentContext): Promise<void> {
   if (ctx.forcedCustomerId) {
     const customer = await getCustomerById(shopId, ctx.forcedCustomerId);
     if (!customer) {
+      ctx.setOutcome?.("error");
       await sendText(senderPhone, replyError());
       return;
     }
     if (isLowConfidence(ctx) || largeAmount) {
+      ctx.setOutcome?.(largeAmount ? "refused" : "asked_confirm");
       await confirmPaymentGate(ctx, customer, amountPaise);
       return;
     }
     await recordPayment({ shopId, senderPhone, messageId: ctx.messageId, customer, amountPaise });
+    ctx.setOutcome?.("saved");
     return;
   }
 
   const name = extracted.customer_name?.trim() || null;
   if (!name) {
+    ctx.setOutcome?.("asked_customer");
     await sendText(senderPhone, replyPaymentNeedsCustomer());
     return;
   }
 
   const resolution = await findExistingCustomer(shopId, name, ctx.messageId);
   if (resolution.status === "not_found") {
+    ctx.setOutcome?.("refused");
     await sendText(senderPhone, replyCustomerNotFound(name));
     return;
   }
@@ -146,11 +153,13 @@ export async function handlePaymentIntent(ctx: IntentContext): Promise<void> {
     return;
   }
   if (resolution.status === "error") {
+    ctx.setOutcome?.("error");
     await sendText(senderPhone, replyError());
     return;
   }
 
   if (isLowConfidence(ctx) || largeAmount) {
+    ctx.setOutcome?.(largeAmount ? "refused" : "asked_confirm");
     await confirmPaymentGate(ctx, resolution.customer, amountPaise);
     return;
   }
@@ -162,4 +171,5 @@ export async function handlePaymentIntent(ctx: IntentContext): Promise<void> {
     customer: resolution.customer,
     amountPaise,
   });
+  ctx.setOutcome?.("saved");
 }

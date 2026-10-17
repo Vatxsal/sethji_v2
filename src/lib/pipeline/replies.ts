@@ -143,8 +143,9 @@ export function replyNewCustomerMade(name: string, last4: string | null): string
     : `Naya customer bana: ${name}`;
 }
 
-export function replyUnitMismatch(itemName: string, catalogUnit: string, spokenUnit: string): string {
-  return `${itemName} ${catalogUnit} me bikta hai, aapne ${spokenUnit} bola. Kitne ${catalogUnit}?`;
+export function replyUnitMismatch(itemName: string, catalogUnit: string): string {
+  const capitalized = catalogUnit.charAt(0).toUpperCase() + catalogUnit.slice(1);
+  return `${itemName} ${catalogUnit} me bikta hai. ${capitalized} me bhejein, jaise: 2 ${catalogUnit} ${itemName.toLowerCase()} swayam udhaar`;
 }
 
 export function replyCancelled(): string {

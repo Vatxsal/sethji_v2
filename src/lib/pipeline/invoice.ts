@@ -113,6 +113,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
   if (ctx.forcedCustomerId) {
     const customer = await getCustomerById(shopId, ctx.forcedCustomerId);
     if (!customer) {
+      ctx.setOutcome?.("error");
       await sendText(senderPhone, replyError());
       return;
     }
@@ -122,6 +123,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
   } else if (name) {
     const resolution = await findExistingCustomer(shopId, name, messageId);
     if (resolution.status === "not_found") {
+      ctx.setOutcome?.("refused");
       await sendText(senderPhone, replyCustomerNotFound(name));
       return;
     }
@@ -130,6 +132,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
       return;
     }
     if (resolution.status === "error") {
+      ctx.setOutcome?.("error");
       await sendText(senderPhone, replyError());
       return;
     }
@@ -141,6 +144,7 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
   const order = await latestConfirmedOrder(shopId, customerId);
   if (!order) {
     log(messageId, "bill_no_order", { customerId });
+    ctx.setOutcome?.("refused");
     await sendText(senderPhone, replyNoOrderForBill());
     return;
   }
@@ -204,4 +208,5 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
 
   const caption = replyInvoiceCaption(invoiceNumber, captionName ?? customerName, totalPaise);
   await sendDocument(senderPhone, signed.signedUrl, `${invoiceNumber}.pdf`, caption);
+  ctx.setOutcome?.("saved");
 }

@@ -1,4 +1,5 @@
 import type { CatalogItem, ExtractedIntent } from "./extract";
+import type { OutcomeSink } from "./messageLog";
 
 export type InputType = "text" | "voice";
 
@@ -12,6 +13,7 @@ export type IntentContext = {
   confidenceScore?: number | null;
   transcript?: string | null;
   text?: string | null;
+  setOutcome?: OutcomeSink;
 };
 
 export type OrderContext = IntentContext & {

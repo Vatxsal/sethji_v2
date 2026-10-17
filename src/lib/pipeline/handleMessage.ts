@@ -1,3 +1,5 @@
+import { after } from "next/server";
+
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
 import { downloadMedia } from "@/lib/whatsapp/media";
@@ -5,7 +7,14 @@ import type { IncomingMessage } from "@/lib/whatsapp/parse";
 import { markRead, sendText } from "@/lib/whatsapp/send";
 import { continueNamePending, continuePickPending, handleButtonReply, runConfirmedOrder } from "./confirm";
 import { dispatchExtractedIntent } from "./dispatch";
-import { extractIntent, type CatalogItem } from "./extract";
+import { extractIntent, type CatalogItem, type ExtractedIntent } from "./extract";
+import {
+  createMessageLogState,
+  errorTextOf,
+  logMessage,
+  type MessageLogState,
+  type OutcomeSink,
+} from "./messageLog";
 import { getOpenPending, resolvePending } from "./pending";
 import { saveVoiceNote, transcribeVoice } from "./stt";
 import { fetchKnownCustomers } from "./understand";
@@ -83,9 +92,18 @@ async function handleInboundText(
   opts: {
     rawInputType: "text" | "voice";
     confidenceScore: number | null;
+    state: MessageLogState;
   },
 ): Promise<void> {
   const senderPhone = message.from;
+  const state = opts.state;
+  const setOutcome: OutcomeSink = (outcome) => {
+    state.outcome = outcome;
+  };
+  const setParsed = (intent: ExtractedIntent): void => {
+    state.parsed = intent;
+  };
+  state.sttConfidence = opts.confidenceScore;
 
   const pending = await getOpenPending(shopId, senderPhone);
 
@@ -94,8 +112,26 @@ async function handleInboundText(
       ((pending.payload as { awaiting?: string } | null)?.awaiting ?? null) === "name";
     const catalog = await loadCatalog(shopId);
     const continued = awaitingName
-      ? await continueNamePending({ pending, text, shopId, senderPhone, messageId: message.id, catalog })
-      : await continuePickPending({ pending, text, shopId, senderPhone, messageId: message.id, catalog });
+      ? await continueNamePending({
+          pending,
+          text,
+          shopId,
+          senderPhone,
+          messageId: message.id,
+          catalog,
+          setOutcome,
+          setParsed,
+        })
+      : await continuePickPending({
+          pending,
+          text,
+          shopId,
+          senderPhone,
+          messageId: message.id,
+          catalog,
+          setOutcome,
+          setParsed,
+        });
     if (continued) {
       await markProcessedDone(message.id, shopId);
       return;
@@ -105,7 +141,7 @@ async function handleInboundText(
       pendingId: pending.id,
     });
   } else if (pending && pending.action_type === "confirm_action" && isConfirmText(text)) {
-    await runConfirmedOrder({ pending, shopId, senderPhone, messageId: message.id });
+    await runConfirmedOrder({ pending, shopId, senderPhone, messageId: message.id, setOutcome });
     await markProcessedDone(message.id, shopId);
     return;
   }
@@ -119,6 +155,7 @@ async function handleInboundText(
   const catalog = await loadCatalog(shopId);
   const customers = await fetchKnownCustomers(shopId);
   const extracted = await extractIntent(text, catalog, customers, message.id);
+  state.parsed = extracted;
 
   await dispatchExtractedIntent({
     shopId,
@@ -130,6 +167,7 @@ async function handleInboundText(
     confidenceScore: opts.confidenceScore,
     transcript: opts.rawInputType === "voice" ? text : null,
     text,
+    setOutcome,
   });
 
   await markProcessedDone(message.id, shopId);
@@ -139,6 +177,7 @@ async function handleAudioMessage(
   message: IncomingMessage,
   shopId: string,
   shopName: string,
+  state: MessageLogState,
 ): Promise<void> {
   if (!message.audioId) {
     await sendText(message.from, replyVoiceUnclear());
@@ -150,21 +189,29 @@ async function handleAudioMessage(
   await saveVoiceNote(shopId, message.id, buffer);
 
   const { transcript, confidence } = await transcribeVoice(buffer, message.id);
+  state.sttConfidence = confidence;
   if (!transcript) {
     await sendText(message.from, replyVoiceUnclear());
     await markProcessedDone(message.id, shopId);
     return;
   }
+  state.inputText = transcript;
 
   await handleInboundText(message, shopId, shopName, transcript, {
     rawInputType: "voice",
     confidenceScore: confidence,
+    state,
   });
 }
 
 export async function handleMessage(message: IncomingMessage): Promise<void> {
   const sb = getSupabase();
-  try {
+  const state = createMessageLogState(message);
+  const setOutcome: OutcomeSink = (outcome) => {
+    state.outcome = outcome;
+  };
+
+  const processMessage = async (): Promise<void> => {
     await markRead(message.id);
 
     const { data: shop, error } = await sb
@@ -176,12 +223,15 @@ export async function handleMessage(message: IncomingMessage): Promise<void> {
     log(message.id, "shop", { found: Boolean(shop) });
 
     if (!shop) {
+      state.outcome = "error";
+      state.errorText = "shop not registered";
       await sendText(message.from, replyNotRegistered());
       await markProcessedDone(message.id, null);
       return;
     }
 
     const shopId = String(shop.id);
+    state.shopId = shopId;
     const { error: shopIdError } = await sb
       .from("processed_messages")
       .update({ shop_id: shopId })
@@ -194,6 +244,7 @@ export async function handleMessage(message: IncomingMessage): Promise<void> {
         senderPhone: message.from,
         messageId: message.id,
         buttonReplyId: message.buttonReplyId,
+        setOutcome,
       });
       await markProcessedDone(message.id, shopId);
       return;
@@ -203,19 +254,26 @@ export async function handleMessage(message: IncomingMessage): Promise<void> {
       await handleInboundText(message, shopId, String(shop.name), message.textBody, {
         rawInputType: "text",
         confidenceScore: null,
+        state,
       });
       return;
     }
 
     if (message.type === "audio") {
-      await handleAudioMessage(message, shopId, String(shop.name));
+      await handleAudioMessage(message, shopId, String(shop.name), state);
       return;
     }
 
     await sendText(message.from, replyOnlyText());
     await markProcessedDone(message.id, shopId);
+  };
+
+  try {
+    await processMessage();
   } catch (error) {
     log(message.id, "handle_error", describeError(error));
+    state.outcome = "error";
+    state.errorText = errorTextOf(error);
     try {
       await sb
         .from("processed_messages")
@@ -230,4 +288,6 @@ export async function handleMessage(message: IncomingMessage): Promise<void> {
       log(message.id, "error_reply_failed", { error: sendError });
     }
   }
+
+  after(() => logMessage(state));
 }

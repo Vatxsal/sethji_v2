@@ -49,6 +49,7 @@ export async function handleUndoIntent(ctx: IntentContext): Promise<void> {
   const target = ((candidates ?? []) as LedgerRow[]).find((row) => !reversedIds.has(row.id));
   if (!target) {
     log(messageId, "undo_none", {});
+    ctx.setOutcome?.("refused");
     await sendText(senderPhone, replyUndoNone());
     return;
   }
@@ -99,4 +100,5 @@ export async function handleUndoIntent(ctx: IntentContext): Promise<void> {
   log(messageId, "undo_done", { entryId: target.id, entryType: target.entry_type });
 
   await sendText(senderPhone, replyUndoDone(what, balancePaise));
+  ctx.setOutcome?.("saved");
 }

@@ -15,10 +15,12 @@ export async function handleAddItemIntent(ctx: IntentContext): Promise<void> {
   const unit = newItem?.unit?.trim().toLowerCase() ?? "";
 
   if (!name || priceRupees <= 0) {
+    ctx.setOutcome?.("refused");
     await sendText(senderPhone, replyAddItemMissing());
     return;
   }
   if (!ALLOWED_UNITS.includes(unit)) {
+    ctx.setOutcome?.("refused");
     await sendText(senderPhone, replyAddItemBadUnit());
     return;
   }
@@ -56,4 +58,5 @@ export async function handleAddItemIntent(ctx: IntentContext): Promise<void> {
 
   log(messageId, "item_upserted", { name, pricePaise, unit });
   await sendText(senderPhone, replyAddItem(name, pricePaise, unit));
+  ctx.setOutcome?.("saved");
 }

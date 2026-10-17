@@ -302,6 +302,7 @@ export async function startCustomerPick(
     ctx.messageId,
   );
 
+  ctx.setOutcome?.("asked_customer");
   await sendText(ctx.senderPhone, replyPickCustomerList(balances, allowNaya));
 }
 
@@ -314,6 +315,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
     if (item.quantity === null || !Number.isFinite(item.quantity) || item.quantity <= 0) {
       const spoken = item.spoken_name || item.catalog_item_name || "item";
       log(messageId, "order_bad_quantity", { item: spoken, quantity: item.quantity });
+      ctx.setOutcome?.("refused");
       await sendText(senderPhone, replyQuantityUnclear(spoken));
       return;
     }
@@ -336,6 +338,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
       } satisfies NameAwaitPayload,
       messageId,
     );
+    ctx.setOutcome?.("asked_customer");
     await sendText(senderPhone, replyUdhaarNeedsCustomer());
     return;
   }
@@ -345,6 +348,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
   if (ctx.forcedCustomerId) {
     customer = await getCustomerById(shopId, ctx.forcedCustomerId);
     if (!customer) {
+      ctx.setOutcome?.("error");
       await sendText(senderPhone, replyError());
       return;
     }
@@ -359,14 +363,13 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
       const { lines, problems, unitMismatch } = buildLines(extracted, catalog);
       if (unitMismatch) {
         log(messageId, "order_unit_mismatch", unitMismatch);
-        await sendText(
-          senderPhone,
-          replyUnitMismatch(unitMismatch.itemName, unitMismatch.catalogUnit, unitMismatch.spokenUnit),
-        );
+        ctx.setOutcome?.("refused");
+        await sendText(senderPhone, replyUnitMismatch(unitMismatch.itemName, unitMismatch.catalogUnit));
         return;
       }
       if (lines.length === 0) {
         log(messageId, "order_unbillable", { problems });
+        ctx.setOutcome?.("refused");
         await sendText(senderPhone, replyItemNotInCatalog(problems[0] ?? "item"));
         return;
       }
@@ -391,6 +394,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
         messageId,
       );
       log(messageId, "new_customer_confirm", { pendingId, name: resolution.name, last4: resolution.last4 });
+      ctx.setOutcome?.("asked_confirm");
       await sendButtons(
         senderPhone,
         replyNewCustomerConfirm(resolution.name, resolution.last4),
@@ -402,10 +406,12 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
       return;
     }
     if (resolution.status === "invalid_name") {
+      ctx.setOutcome?.("refused");
       await sendText(senderPhone, replyInvalidName());
       return;
     }
     if (resolution.status === "error") {
+      ctx.setOutcome?.("error");
       await sendText(senderPhone, replyError());
       return;
     }
@@ -418,14 +424,13 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
   const { lines, problems, unitMismatch } = buildLines(extracted, catalog);
   if (unitMismatch) {
     log(messageId, "order_unit_mismatch", unitMismatch);
-    await sendText(
-      senderPhone,
-      replyUnitMismatch(unitMismatch.itemName, unitMismatch.catalogUnit, unitMismatch.spokenUnit),
-    );
+    ctx.setOutcome?.("refused");
+    await sendText(senderPhone, replyUnitMismatch(unitMismatch.itemName, unitMismatch.catalogUnit));
     return;
   }
   if (lines.length === 0) {
     log(messageId, "order_unbillable", { problems });
+    ctx.setOutcome?.("refused");
     await sendText(senderPhone, replyItemNotInCatalog(problems[0] ?? "item"));
     return;
   }
@@ -471,6 +476,7 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
       lowConfidence,
       largeAmount,
     });
+    ctx.setOutcome?.(largeAmount ? "refused" : "asked_confirm");
     await sendButtons(
       senderPhone,
       replyConfirmSummary({
@@ -503,4 +509,5 @@ export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
     confidenceScore: ctx.confidenceScore,
     prefixLine,
   });
+  ctx.setOutcome?.("saved");
 }

@@ -8,7 +8,8 @@ import {
   sanitizeCustomerName,
   type CustomerRow,
 } from "./customers";
-import type { CatalogItem } from "./extract";
+import type { CatalogItem, ExtractedIntent } from "./extract";
+import type { OutcomeSink } from "./messageLog";
 import {
   saveConfirmedOrder,
   type ConfirmOrderPayload,
@@ -61,11 +62,13 @@ export async function runConfirmedOrder(params: {
   shopId: string;
   senderPhone: string;
   messageId: string;
+  setOutcome?: OutcomeSink;
 }): Promise<void> {
   const { pending, shopId, senderPhone, messageId } = params;
   const payload = asConfirmPayload(pending.payload);
   if (!payload) {
     await resolvePending(pending.id, "cancelled");
+    params.setOutcome?.("error");
     await sendText(senderPhone, replyError());
     return;
   }
@@ -80,6 +83,7 @@ export async function runConfirmedOrder(params: {
       payload.last4,
     );
     if (!created) {
+      params.setOutcome?.("refused");
       await sendText(senderPhone, replyInvalidName());
       return;
     }
@@ -99,12 +103,14 @@ export async function runConfirmedOrder(params: {
       confidenceScore: payload.confidenceScore,
       prefixLine: replyNewCustomerMade(payload.name, payload.last4),
     });
+    params.setOutcome?.("saved");
     return;
   }
 
   if (payload.kind === "payment") {
     const customer = await getCustomerById(shopId, payload.customerId);
     if (!customer) {
+      params.setOutcome?.("error");
       await sendText(senderPhone, replyError());
       return;
     }
@@ -115,6 +121,7 @@ export async function runConfirmedOrder(params: {
       customer,
       amountPaise: payload.amountPaise,
     });
+    params.setOutcome?.("saved");
     return;
   }
 
@@ -132,6 +139,7 @@ export async function runConfirmedOrder(params: {
     confidenceScore: payload.confidenceScore,
     prefixLine: payload.prefixLine ?? null,
   });
+  params.setOutcome?.("saved");
 }
 
 export async function handleButtonReply(params: {
@@ -139,6 +147,7 @@ export async function handleButtonReply(params: {
   senderPhone: string;
   messageId: string;
   buttonReplyId: string;
+  setOutcome?: OutcomeSink;
 }): Promise<void> {
   const [action, pendingId] = params.buttonReplyId.split(":");
   if (!pendingId) {
@@ -167,6 +176,7 @@ export async function handleButtonReply(params: {
       await resolvePending(pending.id, "cancelled");
     }
     log(params.messageId, "confirm_cancelled", { pendingId });
+    params.setOutcome?.("refused");
     await sendText(params.senderPhone, replyCancelled());
     return;
   }
@@ -194,10 +204,13 @@ export async function continueNamePending(params: {
   senderPhone: string;
   messageId: string;
   catalog: CatalogItem[];
+  setOutcome?: OutcomeSink;
+  setParsed?: (intent: ExtractedIntent) => void;
 }): Promise<boolean> {
   const payload = params.pending.payload as NameAwaitPayload | null;
   const intent = payload?.intent;
   if (!intent) return false;
+  params.setParsed?.(intent);
   if (!isNameOnlyReply(params.text)) return false;
 
   const name = cleanNameReply(params.text);
@@ -206,6 +219,7 @@ export async function continueNamePending(params: {
   if (!sanitizeCustomerName(name)) {
     await resolvePending(params.pending.id, "cancelled");
     log(params.messageId, "name_pending_invalid", { name });
+    params.setOutcome?.("refused");
     await sendText(params.senderPhone, replyInvalidName());
     return true;
   }
@@ -222,6 +236,7 @@ export async function continueNamePending(params: {
     extracted: intent,
     catalog: params.catalog,
     sourceMessageId: payload.sourceMessageId ?? null,
+    setOutcome: params.setOutcome,
   });
   return true;
 }
@@ -233,6 +248,8 @@ export async function continuePickPending(params: {
   senderPhone: string;
   messageId: string;
   catalog: CatalogItem[];
+  setOutcome?: OutcomeSink;
+  setParsed?: (intent: ExtractedIntent) => void;
 }): Promise<boolean> {
   const payload = params.pending.payload as PickCustomerPayload | null;
   const extracted = payload?.extracted;
@@ -241,6 +258,7 @@ export async function continuePickPending(params: {
     await resolvePending(params.pending.id, "cancelled");
     return false;
   }
+  params.setParsed?.(extracted);
 
   const text = params.text.trim().toLowerCase();
   let chosen: CustomerRow | null = null;
@@ -262,6 +280,7 @@ export async function continuePickPending(params: {
 
   if (noMatch) {
     log(params.messageId, "pick_no_match", { text, candidates: candidates.length });
+    params.setOutcome?.("asked_customer");
     await sendText(params.senderPhone, replyPickNoMatch());
     return true;
   }
@@ -269,6 +288,7 @@ export async function continuePickPending(params: {
   if (createNew) {
     if (extracted.intent !== "order") {
       log(params.messageId, "pick_naya_wrong_intent", { intent: extracted.intent });
+      params.setOutcome?.("refused");
       await sendText(params.senderPhone, replyNayaOnlyForOrders());
       return true;
     }
@@ -278,6 +298,7 @@ export async function continuePickPending(params: {
     if (!created) {
       await resolvePending(params.pending.id, "cancelled");
       log(params.messageId, "pick_new_invalid_name", { name });
+      params.setOutcome?.("refused");
       await sendText(params.senderPhone, replyInvalidName());
       return true;
     }
@@ -294,6 +315,7 @@ export async function continuePickPending(params: {
       rawInputType: payload.rawInputType === "voice" ? "voice" : "text",
       confidenceScore: payload.confidenceScore ?? null,
       transcript: payload.transcript ?? null,
+      setOutcome: params.setOutcome,
     });
     return true;
   }
@@ -316,6 +338,7 @@ export async function continuePickPending(params: {
     rawInputType: payload.rawInputType === "voice" ? "voice" : "text",
     confidenceScore: payload.confidenceScore ?? null,
     transcript: payload.transcript ?? null,
+    setOutcome: params.setOutcome,
   });
   return true;
 }

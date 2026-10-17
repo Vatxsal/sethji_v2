@@ -39,6 +39,7 @@ export async function handleBalanceIntent(ctx: IntentContext): Promise<void> {
 
   if (ctx.text && BALANCE_MODIFY_PATTERN.test(ctx.text)) {
     log(messageId, "balance_modify_blocked", { text: ctx.text });
+    ctx.setOutcome?.("refused");
     await sendText(senderPhone, replyBalanceNoChange());
     return;
   }
@@ -46,6 +47,7 @@ export async function handleBalanceIntent(ctx: IntentContext): Promise<void> {
   if (ctx.forcedCustomerId) {
     const customer = await getCustomerById(shopId, ctx.forcedCustomerId);
     if (!customer) {
+      ctx.setOutcome?.("error");
       await sendText(senderPhone, replyError());
       return;
     }
@@ -58,6 +60,7 @@ export async function handleBalanceIntent(ctx: IntentContext): Promise<void> {
   if (name) {
     const resolution = await findExistingCustomer(shopId, name, messageId);
     if (resolution.status === "not_found") {
+      ctx.setOutcome?.("refused");
       await sendText(senderPhone, replyCustomerNotFound(name));
       return;
     }
@@ -66,6 +69,7 @@ export async function handleBalanceIntent(ctx: IntentContext): Promise<void> {
       return;
     }
     if (resolution.status === "error") {
+      ctx.setOutcome?.("error");
       await sendText(senderPhone, replyError());
       return;
     }

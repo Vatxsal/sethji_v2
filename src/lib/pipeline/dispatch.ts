@@ -4,6 +4,7 @@ import { handleAddItemIntent } from "./addItem";
 import { handleBalanceIntent } from "./balance";
 import type { IntentContext } from "./context";
 import type { CatalogItem, ExtractedIntent } from "./extract";
+import type { OutcomeSink } from "./messageLog";
 import { handleOrderIntent } from "./order";
 import { handlePaymentIntent } from "./payment";
 import { handleUndoIntent } from "./undo";
@@ -22,6 +23,7 @@ export type DispatchParams = {
   confidenceScore?: number | null;
   transcript?: string | null;
   text?: string | null;
+  setOutcome?: OutcomeSink;
 };
 
 export async function dispatchExtractedIntent(params: DispatchParams): Promise<void> {
@@ -35,6 +37,7 @@ export async function dispatchExtractedIntent(params: DispatchParams): Promise<v
     confidenceScore: params.confidenceScore ?? null,
     transcript: params.transcript ?? null,
     text: params.text ?? null,
+    setOutcome: params.setOutcome,
   };
 
   const distinctNames = new Set(
@@ -42,6 +45,7 @@ export async function dispatchExtractedIntent(params: DispatchParams): Promise<v
   );
   if (distinctNames.size > 1) {
     log(params.messageId, "multi_customer", { names: [...distinctNames] });
+    params.setOutcome?.("refused");
     await sendText(params.senderPhone, replyOneThing());
     return;
   }
@@ -56,6 +60,7 @@ export async function dispatchExtractedIntent(params: DispatchParams): Promise<v
       items: params.extracted.items.length,
       amount: params.extracted.amount_rupees,
     });
+    params.setOutcome?.("refused");
     await sendText(params.senderPhone, replyOneThing());
     return;
   }
@@ -92,6 +97,7 @@ export async function dispatchExtractedIntent(params: DispatchParams): Promise<v
       await sendText(params.senderPhone, replyHelp());
       break;
     case "unknown":
+      params.setOutcome?.("not_understood");
       await sendText(params.senderPhone, replyExtractionFailed());
       break;
     default:

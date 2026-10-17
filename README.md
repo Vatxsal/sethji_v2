@@ -1,14 +1,63 @@
-# Sethji
+<div align="center">
 
-WhatsApp bot for kirana shopkeepers. One webhook + helpers, no website. The shopkeeper
-texts or sends voice notes (Hindi / English / Hinglish) to record orders, udhaar,
-payments, balances and GST invoice PDFs.
+# 🛒 Sethji
 
-Stack: Next.js 15 (App Router, API routes only), TypeScript strict, Supabase
+### WhatsApp-native AI billing, udhaar & GST assistant for Indian kirana shops
+
+*Text or voice-note in Hindi / English / Hinglish → orders, udhaar, payments, balances & GST invoice PDFs.*
+
+![Next.js](https://img.shields.io/badge/Next.js_15-000000?style=for-the-badge&logo=nextdotjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript_strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
+![Groq](https://img.shields.io/badge/Groq-F55036?style=for-the-badge)
+![Gemini](https://img.shields.io/badge/Gemini_fallback-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)
+![WhatsApp](https://img.shields.io/badge/WhatsApp_Cloud_API-25D366?style=for-the-badge&logo=whatsapp&logoColor=white)
+![Vercel](https://img.shields.io/badge/Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)
+![Eval](https://img.shields.io/badge/extraction_eval-32%2F32_passed-brightgreen?style=for-the-badge)
+
+</div>
+
+---
+
+> WhatsApp bot for kirana shopkeepers. One webhook + helpers, no website. The shopkeeper
+> texts or sends voice notes (Hindi / English / Hinglish) to record orders, udhaar,
+> payments, balances and GST invoice PDFs.
+
+**Stack:** Next.js 15 (App Router, API routes only), TypeScript strict, Supabase
 (service-role, server only), Groq (LLM + Whisper), Gemini fallback, Meta WhatsApp
 Cloud API, `pdf-lib` for invoice PDFs.
 
-## 1. Environment
+## 📑 Table of Contents
+
+| # | Section |
+| --- | --- |
+| 1 | [⚙️ Environment](#1-️-environment) |
+| 2 | [🌱 Seed & eval](#2--seed--eval) |
+| 3 | [💻 Run locally](#3--run-locally) |
+| 4 | [🚀 Deploy to Vercel](#4--deploy-to-vercel) |
+| 5 | [🔗 Meta webhook](#5--meta-webhook) |
+| 6 | [🧠 Message flow & guard rails](#6--message-flow--guard-rails) |
+| 7 | [🔍 Where to look when X breaks](#7--where-to-look-when-x-breaks) |
+
+## 🗺️ Architecture at a Glance
+
+```mermaid
+flowchart LR
+    A[📱 Shopkeeper<br/>text / voice] --> B[🔗 /api/webhook<br/>signature + dedupe + stale guard]
+    B --> C[🎙️ Whisper STT<br/>voice only]
+    C --> D[🧠 Groq llama-3.3-70b<br/>Gemini fallback]
+    B --> D
+    D --> E[🧩 understand.ts<br/>post-processing]
+    E --> F{🛡️ Guard rails<br/>+ Confirm buttons}
+    F --> G[(🗄️ Supabase<br/>ledger RPCs)]
+    F --> H[💬 replies.ts → WhatsApp]
+    F --> I[🧾 pdf-lib invoice]
+    F --> J[📋 message_log audit]
+```
+
+---
+
+## 1. ⚙️ Environment
 
 ```bash
 cp .env.example .env.local
@@ -30,16 +79,17 @@ Fill every key (all required unless noted):
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase project Settings > API (server only, never expose) |
 | `WHATSAPP_GRAPH_VERSION` | optional, defaults to `v23.0` |
 
-The Supabase schema already exists (`shops`, `customers`, `catalog_items`,
-`processed_messages`, `orders` (with `source_message_id` -> `processed_messages`),
-`order_items`, `ledger_entries`, `invoices`, `identity_matches`, `pending_actions`,
-`message_log` + RPCs `add_ledger_entry`, `get_customer_balance`,
-`issue_invoice_number`). Never create or alter tables.
-Create two **private** Storage buckets: `voice-notes` and `invoices`.
+> [!IMPORTANT]
+> The Supabase schema already exists (`shops`, `customers`, `catalog_items`,
+> `processed_messages`, `orders` (with `source_message_id` -> `processed_messages`),
+> `order_items`, `ledger_entries`, `invoices`, `identity_matches`, `pending_actions`,
+> `message_log` + RPCs `add_ledger_entry`, `get_customer_balance`,
+> `issue_invoice_number`). **Never create or alter tables.**
+> Create two **private** Storage buckets: `voice-notes` and `invoices`.
 
 `src/env.ts` validates keys lazily (zod) and throws naming the missing key.
 
-## 2. Seed & eval
+## 2. 🌱 Seed & eval
 
 ```bash
 npm install
@@ -55,9 +105,9 @@ phone, then upserts catalog items case-insensitively.
 pipeline (prompt + post-processing) and asserts intent, customer name, customer-name
 count, last-4 digits, payment method, amount, item names and quantities (including
 `null` for invalid quantities), and `add_item` payloads. Current result:
-**32/32 passed**. `npm run typecheck` runs `tsc --noEmit`.
+**32/32 passed** ✅. `npm run typecheck` runs `tsc --noEmit`.
 
-## 3. Run locally
+## 3. 💻 Run locally
 
 ```bash
 npm run dev
@@ -67,13 +117,13 @@ npm run build && npm run start
 
 Check `GET /api/health` — every env key should be `true` and `db` should be `true`.
 
-## 4. Deploy to Vercel
+## 4. 🚀 Deploy to Vercel
 
 1. Push the repo to GitHub and import it in Vercel (framework: Next.js, no changes needed).
 2. Add all env vars from `.env.local` in Project > Settings > Environment Variables.
 3. Deploy. Your base URL is now `https://<app>.vercel.app`.
 
-## 5. Meta webhook
+## 5. 🔗 Meta webhook
 
 1. In Meta App > WhatsApp > Configuration > Webhook:
    - **Callback URL**: `https://<app>.vercel.app/api/webhook`
@@ -89,16 +139,18 @@ Check `GET /api/health` — every env key should be `true` and `db` should be `t
    10 minutes (`STALE_MESSAGE_SECONDS = 600`) are marked completed without replying —
    Meta redeliveries never trigger stale replies.
 
-## 6. Message flow & guard rails
+## 6. 🧠 Message flow & guard rails
 
-**Intents** (LLM extraction in `src/lib/pipeline/extract.ts`, Groq `llama-3.3-70b`
+### 🎯 Intents
+
+(LLM extraction in `src/lib/pipeline/extract.ts`, Groq `llama-3.3-70b`
 with Gemini fallback, then deterministic post-processing in `understand.ts`):
 `order`, `payment`, `balance`, `bill`, `undo`, `add_item`, `help`. Both text and
 voice notes are accepted; voice goes through Whisper (`stt.ts`, language `hi`) and
 keeps the transcript + confidence in the log. Reply text lives only in
 `src/lib/pipeline/replies.ts`.
 
-**Understanding rules**
+### 🧩 Understanding rules
 
 - Customer names are matched exactly, then partially; ambiguous names (2+ customers)
   send a numbered pick list with last-4 disambiguator labels and current balances.
@@ -113,7 +165,7 @@ keeps the transcript + confidence in the log. Reply text lives only in
   positive = customer owes more, negative = payment received; balance always comes
   from `get_customer_balance()`.
 
-**Safety rails**
+### 🛡️ Safety rails
 
 | Rail | Behaviour |
 | --- | --- |
@@ -126,13 +178,17 @@ keeps the transcript + confidence in the log. Reply text lives only in
 | Duplicate / stale (>10 min) webhook messages | Ignored (dedupe + stale guard) |
 | Unregistered number | Replied "not registered", nothing written |
 
-**Confirmations** are `pending_actions` rows: `confirm_action` (Haan/Cancel buttons)
+### ✅ Confirmations
+
+Confirmations are `pending_actions` rows: `confirm_action` (Haan/Cancel buttons)
 and `pick_customer` (name/list follow-ups). Button replies, or an exact `haan/yes/ok`
 text while a confirm pending is open, run the saved payload. An answer that matches
 no candidate cancels a pick pending and the message is re-extracted from scratch;
 the confirm pending itself stays open until it expires (30 min).
 
-**Audit log** — every processed message writes exactly one row to `message_log`
+### 📋 Audit log
+
+Every processed message writes exactly one row to `message_log`
 (inserted via `after()` at the end of `handleMessage`, including the error path):
 `(shop_id, whatsapp_message_id, input_type, input_text, stt_confidence, parsed jsonb,
 outcome, error_text)`. `outcome` is one of `saved | asked_customer | asked_confirm |
@@ -140,10 +196,15 @@ refused | not_understood | error`; `input_text` is the text / transcript / butto
 (truncated to 1000 chars), `parsed` is the post-processed intent (null for button and
 greeting messages). Insert failures are logged, never thrown.
 
-## 7. Where to look when X breaks
+## 7. 🔍 Where to look when X breaks
 
 Every stage logs one line: `[msg:<last 6 chars of whatsapp id>] <stage> <json>`.
 Search your Vercel logs for the stage name.
+
+<details>
+<summary><b>📖 Click to expand the full stage → file → meaning table</b></summary>
+
+<br>
 
 | Stage | File | Meaning |
 | --- | --- | --- |
@@ -207,6 +268,17 @@ Search your Vercel logs for the stage name.
 | `stt` | `src/lib/pipeline/stt.ts` | Whisper transcript + confidence (below 0.55 forces confirm) |
 | `invoice_sent` / `bill_no_order` | `src/lib/pipeline/invoice.ts` | Invoice PDF sent / no confirmed order to bill |
 
-Reply text lives only in `src/lib/pipeline/replies.ts`. Money is integer paise
-everywhere; display uses `Intl` (`en-IN`). Ledger sign: positive = customer owes
-more, negative = payment received. Balance is always `get_customer_balance()`.
+</details>
+
+---
+
+> [!NOTE]
+> Reply text lives only in `src/lib/pipeline/replies.ts`. Money is integer paise
+> everywhere; display uses `Intl` (`en-IN`). Ledger sign: positive = customer owes
+> more, negative = payment received. Balance is always `get_customer_balance()`.
+
+<div align="center">
+
+Built with ❤️ for Indian kirana shopkeepers · **Sethji** by NexusAI
+
+</div>

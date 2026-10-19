@@ -222,3 +222,32 @@ export function replyBalanceNoChange(): string {
 export function replyInvalidName(): string {
   return "Naam samajh nahi aaya. Sirf naam bhejein, jaise: Rahul";
 }
+
+export function replyCatalogItemLine(itemName: string, pricePaise: number, unit: string): string {
+  const rupees = pricePaise % 100 === 0 ? String(pricePaise / 100) : (pricePaise / 100).toFixed(2);
+  return `${itemName} - Rs ${rupees}/${unit}`;
+}
+
+export function replyCatalogList(shownLines: string[], totalItems: number): string {
+  const lines = [`Aapki list (${totalItems} items):`, ...shownLines];
+  const hidden = totalItems - shownLines.length;
+  if (hidden > 0) lines.push(`aur ${hidden} items`);
+  lines.push("Stock ginti abhi nahi hoti.");
+  return lines.join("\n");
+}
+
+export function replyShukriya(): string {
+  return "Shukriya! Kuch aur ho to bhejein.";
+}
+
+export function replyOutOfScope(): string {
+  return [
+    "Ye abhi main nahi kar sakta. Main ye kar sakta hoon:",
+    "2 kilo atta Rahul udhaar",
+    "Rahul ne 200 diye",
+    "Rahul ka hisaab",
+    "Rahul ka bill",
+    "undo",
+    "item list",
+  ].join("\n");
+}

@@ -16,15 +16,73 @@ import {
   type OutcomeSink,
 } from "./messageLog";
 import { getOpenPending, resolvePending } from "./pending";
+import { matchCatalogItem } from "./order";
 import { saveVoiceNote, transcribeVoice } from "./stt";
-import { fetchKnownCustomers } from "./understand";
+import { fetchKnownCustomers, hasBusinessSignal } from "./understand";
 import {
+  replyCatalogItemLine,
+  replyCatalogList,
   replyConnected,
   replyError,
   replyNotRegistered,
   replyOnlyText,
+  replyOutOfScope,
+  replyShukriya,
   replyVoiceUnclear,
 } from "./replies";
+
+const MAX_CATALOG_LINES = 30;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function namedCatalogItem(
+  extracted: ExtractedIntent,
+  text: string,
+  catalog: CatalogItem[],
+): CatalogItem | null {
+  const byLowerName = new Map<string, CatalogItem>();
+  for (const item of catalog) byLowerName.set(item.name.toLowerCase(), item);
+
+  if (extracted.items.length > 1) return null;
+  if (extracted.items.length === 1) {
+    const entry = extracted.items[0];
+    const name = (entry.catalog_item_name ?? entry.spoken_name ?? "").trim();
+    if (!name) return null;
+    const match = byLowerName.get(name.toLowerCase()) ?? matchCatalogItem(name, catalog, byLowerName);
+    if (match) return match;
+  }
+
+  const lower = text.toLowerCase();
+  const matches: CatalogItem[] = [];
+  for (const item of catalog) {
+    for (const word of item.name.toLowerCase().split(/\s+/)) {
+      if (word.length < 2) continue;
+      if (new RegExp(`\\b${escapeRegExp(word)}\\b`).test(lower)) {
+        matches.push(item);
+        break;
+      }
+    }
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function buildCatalogListReply(
+  extracted: ExtractedIntent,
+  text: string,
+  catalog: CatalogItem[],
+): string {
+  const single = namedCatalogItem(extracted, text, catalog);
+  if (single) return replyCatalogItemLine(single.name, single.price_per_unit_paise, single.unit_type);
+  const sorted = [...catalog].sort((a, b) =>
+    a.name.localeCompare(b.name, "en", { sensitivity: "base" }),
+  );
+  const shown = sorted
+    .slice(0, MAX_CATALOG_LINES)
+    .map((item) => replyCatalogItemLine(item.name, item.price_per_unit_paise, item.unit_type));
+  return replyCatalogList(shown, sorted.length);
+}
 
 function isGreeting(text: string): boolean {
   const trimmed = text.trim();
@@ -147,6 +205,7 @@ async function handleInboundText(
   }
 
   if (isGreeting(text)) {
+    setOutcome("info");
     await sendText(senderPhone, replyConnected(shopName));
     await markProcessedDone(message.id, shopId);
     return;
@@ -156,6 +215,31 @@ async function handleInboundText(
   const customers = await fetchKnownCustomers(shopId);
   const extracted = await extractIntent(text, catalog, customers, message.id);
   state.parsed = extracted;
+
+  if (extracted.intent === "chitchat") {
+    setOutcome("info");
+    await sendText(senderPhone, isGreeting(text) ? replyConnected(shopName) : replyShukriya());
+    await markProcessedDone(message.id, shopId);
+    return;
+  }
+  if (extracted.intent === "catalog_list") {
+    setOutcome("info");
+    await sendText(senderPhone, buildCatalogListReply(extracted, text, catalog));
+    await markProcessedDone(message.id, shopId);
+    return;
+  }
+  if (extracted.intent === "out_of_scope") {
+    setOutcome("out_of_scope");
+    await sendText(senderPhone, replyOutOfScope());
+    await markProcessedDone(message.id, shopId);
+    return;
+  }
+  if (extracted.intent === "unknown" && !hasBusinessSignal(text, catalog)) {
+    setOutcome("out_of_scope");
+    await sendText(senderPhone, replyOutOfScope());
+    await markProcessedDone(message.id, shopId);
+    return;
+  }
 
   await dispatchExtractedIntent({
     shopId,

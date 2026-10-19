@@ -12,6 +12,20 @@ const BILL_RE = /\bbill\b|\binvoice\b/i;
 const ADD_ITEM_RE =
   /add\s+item\s+(.+?)\s+(\d+(?:\.\d+)?)\s*(?:rupaye|rupees|rupya|rs\.?|₹)\s+(\S+)/i;
 
+const CHITCHAT_RE =
+  /^(?:hi+|hello|hey|namaste|namaskaar|namaskar|salam|thanks|thank you|shukriya|ok|okay|bye|bye[\s-]+bye|tata)(?:\s+(?:bhai|ji|yaar|dost))*[.!]*$/i;
+
+const CATALOG_LIST_RE =
+  /\binventory\b|\bitem\s+lists?\b|\bitems?\s+list\b|\brates?\b|\bprice\s*(list|kya|batao|kitna)\b|\bwhat\s+all\b|\blist\s+(bhejo|bhej\s+do|dikhao|batao)\b/i;
+
+const DATE_PERIOD_RE =
+  /\b(aaj|kal|parso|yesterday|tomorrow|today)\b|\b(?:last|next|is|pichle|pichla|pichhle|pichhla|agle|agley)\s+(?:month|months|mahine|mahina|week|weeks|hafte|hafta|year|years|saal|day|days|din)\b/i;
+
+const PAYMENT_WORD_RE =
+  /udhaa?r|khata|khate|baaki|payment|paid|received|jama|diye|diya|balance|hisaab/i;
+
+const NON_TRANSACTIONAL_INTENTS = new Set(["add_item", "catalog_list", "chitchat", "out_of_scope"]);
+
 const FILLER_TOKENS = new Set([
   "ke", "ka", "ki", "ko", "ne", "mein", "mei", "me",
   "bill", "khata", "khate", "hisaab", "account",
@@ -184,6 +198,12 @@ function hasCatalogWord(text: string, catalog: CatalogItem[]): boolean {
   return tokens.some((token) => isCatalogToken(token, cat));
 }
 
+export function hasBusinessSignal(text: string, catalog: CatalogItem[]): boolean {
+  if (/\d/.test(text)) return true;
+  if (hasCatalogWord(text, catalog)) return true;
+  return PAYMENT_WORD_RE.test(text);
+}
+
 function rescueAddItem(out: ExtractedIntent, text: string): boolean {
   const match = text.match(ADD_ITEM_RE);
   if (!match) return false;
@@ -228,13 +248,18 @@ export function postProcess(
     }
   }
 
+  if (CHITCHAT_RE.test(text.trim())) out.intent = "chitchat";
+  if (CATALOG_LIST_RE.test(text)) out.intent = "catalog_list";
+  if (out.intent === "unknown" && !hasBusinessSignal(text, catalog)) out.intent = "out_of_scope";
+  if (DATE_PERIOD_RE.test(text)) out.intent = "out_of_scope";
+
   if (out.payment_method === null && (out.intent === "order" || out.intent === "payment")) {
     if (UDHAAR_RE.test(text)) out.payment_method = "udhaar";
     else if (CASH_RE.test(text)) out.payment_method = "cash";
     else if (UPI_RE.test(text)) out.payment_method = "upi";
   }
 
-  if (out.intent === "add_item") {
+  if (NON_TRANSACTIONAL_INTENTS.has(out.intent)) {
     out.customer_name = null;
     out.customer_names = [];
   } else {

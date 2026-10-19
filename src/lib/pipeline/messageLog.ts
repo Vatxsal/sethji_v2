@@ -2,7 +2,15 @@ import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
 import type { IncomingMessage } from "@/lib/whatsapp/parse";
 
-export type Outcome = "saved" | "asked_customer" | "asked_confirm" | "refused" | "not_understood" | "error";
+export type Outcome =
+  | "saved"
+  | "asked_customer"
+  | "asked_confirm"
+  | "refused"
+  | "not_understood"
+  | "out_of_scope"
+  | "info"
+  | "error";
 
 export type MessageInputType = "text" | "voice" | "interactive" | "other";
 

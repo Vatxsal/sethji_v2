@@ -235,5 +235,17 @@
     "customer": "Swayam",
     "payment": "udhaar",
     "items": [{ "catalog_item_name": "Chai Patti", "quantity": 2 }]
-  }
+  },
+  { "text": "What all order inventory do we have?", "intent": "catalog_list" },
+  { "text": "inventory kya hai", "intent": "catalog_list" },
+  { "text": "atta ka rate kya hai", "intent": "catalog_list" },
+  { "text": "hi", "intent": "chitchat" },
+  { "text": "shukriya bhai", "intent": "chitchat" },
+  { "text": "ok", "intent": "chitchat" },
+  { "text": "aaj mausam kaisa hai", "intent": "out_of_scope" },
+  { "text": "stock kitna bacha hai", "intent": "out_of_scope" },
+  { "text": "sales report dikhao", "intent": "out_of_scope" },
+  { "text": "Rahul ka kal ka hisaab", "intent": "out_of_scope" },
+  { "text": "is mahine kitna udhaar hua", "intent": "out_of_scope" },
+  { "text": "GST kaise bharte hain", "intent": "out_of_scope" }
 ]

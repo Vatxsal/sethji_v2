@@ -12,7 +12,7 @@ export type PendingActionRow = {
   expires_at: string;
 };
 
-export type PendingType = "pick_customer" | "confirm_action";
+export type PendingType = "pick_customer" | "confirm_action" | "plan";
 export type PendingStatus = "open" | "done" | "cancelled" | "expired";
 
 export async function createPending(
@@ -86,4 +86,17 @@ export async function resolvePending(id: string, status: PendingStatus): Promise
     .eq("id", id);
   if (error) throw error;
   log(id, "pending_resolved", { status });
+}
+
+export async function claimPending(id: string, msgId?: string): Promise<PendingActionRow | null> {
+  const { data, error } = await getSupabase()
+    .from("pending_actions")
+    .update({ status: "done" })
+    .eq("id", id)
+    .eq("status", "open")
+    .select("*")
+    .maybeSingle();
+  if (error) throw error;
+  log(msgId, "pending_claimed", { id, claimed: Boolean(data) });
+  return (data as PendingActionRow | null) ?? null;
 }

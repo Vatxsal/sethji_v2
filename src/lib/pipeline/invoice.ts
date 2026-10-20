@@ -1,16 +1,9 @@
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
-import { sendDocument, sendText } from "@/lib/whatsapp/send";
-import { customerLabel, findExistingCustomer, getCustomerById } from "./customers";
-import type { IntentContext } from "./context";
+import { sendDocument } from "@/lib/whatsapp/send";
+import { customerLabel } from "./customers";
 import { buildInvoicePdf, type InvoicePdfLine } from "./invoicePdf";
-import { startCustomerPick } from "./order";
-import {
-  replyCustomerNotFound,
-  replyError,
-  replyInvoiceCaption,
-  replyNoOrderForBill,
-} from "./replies";
+import { replyInvoiceCaption } from "./replies";
 
 const SIGNED_URL_SECONDS = 3600;
 
@@ -101,59 +94,47 @@ async function getOrCreateInvoice(shopId: string, orderId: string): Promise<stri
   return String(numberResult);
 }
 
-export async function handleBillIntent(ctx: IntentContext): Promise<void> {
-  const { shopId, senderPhone, messageId, extracted } = ctx;
+export async function performBill(
+  shopId: string,
+  senderPhone: string,
+  customerId: string | null,
+  msgId?: string,
+): Promise<{ invoiceNumber: string; totalPaise: number } | "no_order"> {
   const sb = getSupabase();
 
-  let customerId: string | null = null;
   let customerName: string | null = null;
   let captionName: string | null = null;
 
-  const name = extracted.customer_name?.trim() || null;
-  if (ctx.forcedCustomerId) {
-    const customer = await getCustomerById(shopId, ctx.forcedCustomerId);
-    if (!customer) {
-      ctx.setOutcome?.("error");
-      await sendText(senderPhone, replyError());
-      return;
+  if (customerId) {
+    const { data: customer, error } = await sb
+      .from("customers")
+      .select("id, display_name, disambiguator")
+      .eq("id", customerId)
+      .maybeSingle();
+    if (error) throw error;
+    if (customer) {
+      customerName = String(customer.display_name);
+      captionName = await customerLabel(shopId, customer, msgId);
     }
-    customerId = customer.id;
-    customerName = customer.display_name;
-    captionName = await customerLabel(shopId, customer, messageId);
-  } else if (name) {
-    const resolution = await findExistingCustomer(shopId, name, messageId);
-    if (resolution.status === "not_found") {
-      ctx.setOutcome?.("refused");
-      await sendText(senderPhone, replyCustomerNotFound(name));
-      return;
-    }
-    if (resolution.status === "ambiguous") {
-      await startCustomerPick(ctx, resolution.candidates);
-      return;
-    }
-    if (resolution.status === "error") {
-      ctx.setOutcome?.("error");
-      await sendText(senderPhone, replyError());
-      return;
-    }
-    customerId = resolution.customer.id;
-    customerName = resolution.customer.display_name;
-    captionName = await customerLabel(shopId, resolution.customer, messageId);
   }
 
   const order = await latestConfirmedOrder(shopId, customerId);
   if (!order) {
-    log(messageId, "bill_no_order", { customerId });
-    ctx.setOutcome?.("refused");
-    await sendText(senderPhone, replyNoOrderForBill());
-    return;
+    log(msgId, "bill_no_order", { customerId });
+    return "no_order";
   }
 
   if (!customerName && order.customer_id) {
-    const customer = await getCustomerById(shopId, order.customer_id);
-    customerName = customer?.display_name ?? null;
-    customerId = customerId ?? order.customer_id;
-    if (customer) captionName = await customerLabel(shopId, customer, messageId);
+    const { data: customer, error } = await sb
+      .from("customers")
+      .select("id, display_name, disambiguator")
+      .eq("id", order.customer_id)
+      .maybeSingle();
+    if (error) throw error;
+    if (customer) {
+      customerName = String(customer.display_name);
+      captionName = await customerLabel(shopId, customer, msgId);
+    }
   }
 
   const { data: itemRows, error: itemsError } = await sb
@@ -204,9 +185,9 @@ export async function handleBillIntent(ctx: IntentContext): Promise<void> {
     .eq("order_id", order.id);
   if (urlError) throw urlError;
 
-  log(messageId, "invoice_sent", { invoiceNumber, orderId: order.id, totalPaise });
+  log(msgId, "invoice_sent", { invoiceNumber, orderId: order.id, totalPaise });
 
   const caption = replyInvoiceCaption(invoiceNumber, captionName ?? customerName, totalPaise);
   await sendDocument(senderPhone, signed.signedUrl, `${invoiceNumber}.pdf`, caption);
-  ctx.setOutcome?.("saved");
+  return { invoiceNumber, totalPaise };
 }

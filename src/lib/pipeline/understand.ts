@@ -1,19 +1,37 @@
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
-import type { CatalogItem, ExtractedIntent } from "./extract";
+import {
+  ACTION_TYPES,
+  emptyAction,
+  emptyIntent,
+  type ActionType,
+  type CatalogItem,
+  type ExtractedAction,
+  type ExtractedIntent,
+  type ExtractedPlan,
+} from "./extract";
 
 const UDHAAR_RE = /udhaa?r|khata|khate|baaki|उधार/i;
 const CASH_RE = /cash|nagad|nakad|नकद/i;
 const UPI_RE = /upi|paytm|gpay|phonepe/i;
-const UNDO_RE = /undo|wapas|galti/i;
+const UNDO_RE = /undo|wapas|galti|hata\s*do|hatado/i;
 const PAYMENT_RECEIVED_RE = /ne .*(diye|diya|di|mile)/i;
 const BALANCE_RE = /hisaab|baaki|balance/i;
 const BILL_RE = /\bbill\b|\binvoice\b/i;
+const EDIT_REQUEST_RE = /\b(edit|change|badal|badlo|update|correct)\b|\b\d+\s+\w+\s+ko\s+\d+/i;
+const RATE_MODIFY_RE = /\brate\b|\bprice\b|\bdaam\b|\bbhav\b/i;
 const ADD_ITEM_RE =
   /add\s+item\s+(.+?)\s+(\d+(?:\.\d+)?)\s*(?:rupaye|rupees|rupya|rs\.?|₹)\s+(\S+)/i;
 
 const CHITCHAT_RE =
   /^(?:hi+|hello|hey|namaste|namaskaar|namaskar|salam|thanks|thank you|shukriya|ok|okay|bye|bye[\s-]+bye|tata)(?:\s+(?:bhai|ji|yaar|dost))*[.!]*$/i;
+
+const BALANCE_CMD_RE = /\b(kar\s*do|karo|bana\s*do|set|zero|khali|khatam)\b/i;
+
+export function isBalanceSetCommand(text: string): boolean {
+  if (!/\bbalance\b/i.test(text)) return false;
+  return BALANCE_CMD_RE.test(text);
+}
 
 const CATALOG_LIST_RE =
   /\binventory\b|\bitem\s+lists?\b|\bitems?\s+list\b|\brates?\b|\bprice\s*(list|kya|batao|kitna)\b|\bwhat\s+all\b|\blist\s+(bhejo|bhej\s+do|dikhao|batao)\b/i;
@@ -47,6 +65,11 @@ const PAYMENT_TOKENS = new Set([
 const NUMBER_TOKENS = new Set([
   "ek", "do", "teen", "char", "paanch", "chhe", "saat", "aath", "nau", "das",
   "aadha", "dedh", "dhai", "paav", "sawa",
+]);
+
+const CURRENCY_TOKENS = new Set([
+  "rupaye", "rupees", "rupya", "rupaiya", "rs", "rs.", "paise", "paisa",
+  "₹", "amount",
 ]);
 
 const UNIT_TOKENS = new Set([
@@ -163,6 +186,7 @@ function candidateNameFromText(text: string, catalog: CatalogItem[], known: Map<
     const token = tokens[i];
     if (NUMBER_TOKENS.has(token) || UNIT_TOKENS.has(token)) continue;
     if (PAYMENT_TOKENS.has(token) || FILLER_TOKENS.has(token) || COMMAND_TOKENS.has(token)) continue;
+    if (CURRENCY_TOKENS.has(token)) continue;
     if (isCatalogToken(token, cat)) continue;
     if (/\d/.test(token)) continue;
     const prev = i > 0 ? tokens[i - 1] : null;
@@ -204,6 +228,27 @@ export function hasBusinessSignal(text: string, catalog: CatalogItem[]): boolean
   return PAYMENT_WORD_RE.test(text);
 }
 
+function isBannedNameWord(
+  word: string,
+  cat: { full: Set<string>; words: Set<string>; keys: Set<string> },
+): boolean {
+  if (UNIT_TOKENS.has(word) || PAYMENT_TOKENS.has(word) || FILLER_TOKENS.has(word)) return true;
+  if (COMMAND_TOKENS.has(word) || NUMBER_TOKENS.has(word) || CURRENCY_TOKENS.has(word)) return true;
+  return isCatalogToken(word, cat);
+}
+
+function isBogusCustomerName(
+  entry: string,
+  cat: { full: Set<string>; words: Set<string>; keys: Set<string> },
+): boolean {
+  const words = entry
+    .toLowerCase()
+    .split(/[\s,]+/)
+    .filter((word) => word !== "" && /[\p{L}]/u.test(word));
+  if (words.length === 0) return true;
+  return words.every((word) => isBannedNameWord(word, cat));
+}
+
 function rescueAddItem(out: ExtractedIntent, text: string): boolean {
   const match = text.match(ADD_ITEM_RE);
   if (!match) return false;
@@ -227,7 +272,10 @@ export function postProcess(
 ): ExtractedIntent {
   const out: ExtractedIntent = {
     ...result,
-    items: result.items.map((item) => ({ ...item })),
+    items: result.items.map((item) => ({
+      ...item,
+      quantity: item.line_amount_rupees !== null && item.line_amount_rupees !== undefined ? null : item.quantity,
+    })),
     customer_names: [...(result.customer_names ?? [])],
   };
   const known = customerKeyMap(customers);
@@ -252,11 +300,27 @@ export function postProcess(
   if (CATALOG_LIST_RE.test(text)) out.intent = "catalog_list";
   if (out.intent === "unknown" && !hasBusinessSignal(text, catalog)) out.intent = "out_of_scope";
   if (DATE_PERIOD_RE.test(text)) out.intent = "out_of_scope";
+  if (EDIT_REQUEST_RE.test(text) && !RATE_MODIFY_RE.test(text)) out.intent = "edit_request";
 
   if (out.payment_method === null && (out.intent === "order" || out.intent === "payment")) {
     if (UDHAAR_RE.test(text)) out.payment_method = "udhaar";
     else if (CASH_RE.test(text)) out.payment_method = "cash";
     else if (UPI_RE.test(text)) out.payment_method = "upi";
+  }
+
+  if (out.intent === "payment") {
+    if (out.amount_mode === null) out.amount_mode = out.amount_rupees !== null ? "exact" : "none";
+  } else {
+    out.amount_mode = null;
+  }
+  if (out.intent === "order") {
+    if (out.paid_now_rupees !== null || out.discount_rupees !== null) {
+      out.payment_method = "udhaar";
+      out.amount_rupees = null;
+    }
+  } else {
+    out.paid_now_rupees = null;
+    out.discount_rupees = null;
   }
 
   if (NON_TRANSACTIONAL_INTENTS.has(out.intent)) {
@@ -273,7 +337,10 @@ export function postProcess(
         distinct.push(display);
       }
     }
-    out.customer_names = distinct;
+    const cat = catalogTokens(catalog);
+    out.customer_names = distinct.filter(
+      (entry) => known.has(normalizeNameKey(entry)) || !isBogusCustomerName(entry, cat),
+    );
 
     if (out.customer_name === null) {
       if (out.customer_names.length > 0) {
@@ -285,6 +352,14 @@ export function postProcess(
     } else {
       const display = known.get(normalizeNameKey(out.customer_name));
       if (display) out.customer_name = display;
+    }
+
+    if (
+      out.customer_name &&
+      !known.has(normalizeNameKey(out.customer_name)) &&
+      isBogusCustomerName(out.customer_name, cat)
+    ) {
+      out.customer_name = out.customer_names[0] ?? null;
     }
 
     if (out.customer_name) {
@@ -299,12 +374,246 @@ export function postProcess(
     intent: out.intent,
     customer: out.customer_name,
     payment: out.payment_method,
+    amountMode: out.amount_mode,
+    paid: out.paid_now_rupees,
+    discount: out.discount_rupees,
     items: out.items.map((item) => ({
       name: item.catalog_item_name,
       quantity: item.quantity,
       unit: item.unit,
+      amount: item.line_amount_rupees,
     })),
   });
 
   return out;
+}
+
+const CUSTOMER_BEARING = new Set<ActionType>(["order", "payment", "balance", "bill", "undo", "edit_request"]);
+
+function isActionIntent(intent: string): intent is ActionType {
+  return (ACTION_TYPES as readonly string[]).includes(intent);
+}
+
+function sumRupees(a: number | null, b: number | null): number | null {
+  if (a === null && b === null) return null;
+  return (a ?? 0) + (b ?? 0);
+}
+
+function processActionFields(
+  action: ExtractedAction,
+  text: string,
+  catalog: CatalogItem[],
+  known: Map<string, string>,
+  cat: { full: Set<string>; words: Set<string>; keys: Set<string> },
+): ExtractedAction {
+  const out: ExtractedAction = {
+    ...action,
+    items: action.items.map((item) => ({
+      ...item,
+      quantity: item.line_amount_rupees !== null && item.line_amount_rupees !== undefined ? null : item.quantity,
+    })),
+  };
+
+  if (out.payment_method === null && (out.type === "order" || out.type === "payment")) {
+    if (UDHAAR_RE.test(text)) out.payment_method = "udhaar";
+    else if (CASH_RE.test(text)) out.payment_method = "cash";
+    else if (UPI_RE.test(text)) out.payment_method = "upi";
+  }
+
+  if (out.type === "payment") {
+    if (out.amount_mode === null) out.amount_mode = out.amount_rupees !== null ? "exact" : "none";
+  } else {
+    out.amount_mode = null;
+  }
+
+  if (out.type === "order") {
+    if (out.paid_now_rupees !== null || out.discount_rupees !== null) {
+      out.payment_method = "udhaar";
+      out.amount_rupees = null;
+    }
+  } else {
+    out.paid_now_rupees = null;
+    out.discount_rupees = null;
+  }
+
+  if (out.type === "add_item" || out.type === "catalog_list") {
+    out.customer_name = null;
+    out.customer_last4 = null;
+  } else if (out.customer_name) {
+    const display = known.get(normalizeNameKey(out.customer_name));
+    if (display) out.customer_name = display;
+    else if (isBogusCustomerName(out.customer_name, cat)) out.customer_name = null;
+  }
+
+  return out;
+}
+
+function carryoverCustomers(actions: ExtractedAction[]): ExtractedAction[] {
+  let lastName: string | null = null;
+  let lastLast4: string | null = null;
+  return actions.map((action) => {
+    if (!CUSTOMER_BEARING.has(action.type)) return action;
+    if (action.customer_name) {
+      lastName = action.customer_name;
+      lastLast4 = action.customer_last4;
+      return action;
+    }
+    if (lastName !== null) {
+      return { ...action, customer_name: lastName, customer_last4: action.customer_last4 ?? lastLast4 };
+    }
+    return action;
+  });
+}
+
+function sameNameKey(a: string | null, b: string | null): boolean {
+  const keyA = normalizeNameKey(a ?? "");
+  const keyB = normalizeNameKey(b ?? "");
+  if (keyA === "" && keyB === "") return true;
+  return keyA === keyB;
+}
+
+function mergeOrders(actions: ExtractedAction[]): ExtractedAction[] {
+  const out: ExtractedAction[] = [];
+  for (const action of actions) {
+    const index = out.length - 1;
+    const prev = index >= 0 ? out[index] : null;
+    if (
+      prev &&
+      prev.type === "order" &&
+      action.type === "order" &&
+      sameNameKey(prev.customer_name, action.customer_name) &&
+      (prev.customer_last4 ?? null) === (action.customer_last4 ?? null)
+    ) {
+      out[index] = {
+        ...prev,
+        items: [...prev.items, ...action.items],
+        paid_now_rupees: sumRupees(prev.paid_now_rupees, action.paid_now_rupees),
+        discount_rupees: sumRupees(prev.discount_rupees, action.discount_rupees),
+        payment_method: prev.payment_method ?? action.payment_method,
+      };
+      continue;
+    }
+    out.push(action);
+  }
+  return out;
+}
+
+function actionFromLegacy(intent: ExtractedIntent, type: ActionType): ExtractedAction {
+  return {
+    ...emptyAction(type),
+    customer_name: intent.customer_name,
+    customer_last4: intent.customer_last4,
+    items: intent.items,
+    payment_method: intent.payment_method,
+    amount_rupees: intent.amount_rupees,
+    amount_mode: intent.amount_mode,
+    paid_now_rupees: intent.paid_now_rupees,
+    discount_rupees: intent.discount_rupees,
+    new_item: intent.new_item,
+  };
+}
+
+export function postProcessPlan(
+  plan: ExtractedPlan,
+  text: string,
+  catalog: CatalogItem[],
+  customers: string[],
+  msgId?: string,
+): ExtractedPlan {
+  const known = customerKeyMap(customers);
+  const cat = catalogTokens(catalog);
+  let intent = plan.intent;
+  let actions: ExtractedAction[] = plan.actions.map((action) =>
+    processActionFields(action, text, catalog, known, cat),
+  );
+
+  if (actions.length === 0) {
+    const rescued = postProcess({ ...emptyIntent(), intent }, text, catalog, customers);
+    intent = rescued.intent;
+    if (isActionIntent(intent)) {
+      actions = [actionFromLegacy(rescued, intent)];
+    } else if (isBalanceSetCommand(text) && !DATE_PERIOD_RE.test(text)) {
+      intent = "balance";
+      const balanceAction = emptyAction("balance");
+      balanceAction.customer_name = candidateNameFromText(text, catalog, known);
+      actions = [balanceAction];
+    }
+  } else if (CHITCHAT_RE.test(text.trim())) {
+    intent = "chitchat";
+    actions = [];
+  } else if (DATE_PERIOD_RE.test(text)) {
+    intent = "out_of_scope";
+    actions = [];
+  } else if (EDIT_REQUEST_RE.test(text) && !RATE_MODIFY_RE.test(text)) {
+    intent = "edit_request";
+    const named =
+      actions.find((action) => action.customer_name)?.customer_name ??
+      candidateNameFromText(text, catalog, known);
+    const edit = emptyAction("edit_request");
+    edit.customer_name = named;
+    actions = [edit];
+  } else if (
+    isBalanceSetCommand(text) &&
+    actions[0].type !== "balance" &&
+    !actions.some(
+      (action) =>
+        action.type === "order" ||
+        action.type === "add_item" ||
+        action.type === "catalog_list" ||
+        action.type === "bill",
+    )
+  ) {
+    intent = "balance";
+    const named =
+      actions.find((action) => action.customer_name)?.customer_name ??
+      candidateNameFromText(text, catalog, known);
+    const balanceAction = emptyAction("balance");
+    balanceAction.customer_name = named;
+    actions = [balanceAction];
+  } else {
+    intent = actions[0].type;
+  }
+
+  if (actions.length > 0) {
+    actions = carryoverCustomers(actions);
+
+    const customerBearing = actions.filter((action) => CUSTOMER_BEARING.has(action.type));
+    const nameless = customerBearing.filter((action) => action.customer_name === null);
+    if (nameless.length === 1 && customerBearing.length === 1) {
+      const candidate = candidateNameFromText(text, catalog, known);
+      if (candidate) {
+        actions = actions.map((action) =>
+          action.customer_name === null && CUSTOMER_BEARING.has(action.type)
+            ? { ...action, customer_name: candidate }
+            : action,
+        );
+      }
+    }
+
+    actions = mergeOrders(actions);
+    intent = actions[0]?.type ?? intent;
+  }
+
+  log(msgId, "plan", {
+    intent,
+    unclear: plan.unclear,
+    actions: actions.map((action) => ({
+      type: action.type,
+      customer: action.customer_name,
+      last4: action.customer_last4,
+      payment: action.payment_method,
+      amountMode: action.amount_mode,
+      amount: action.amount_rupees,
+      paid: action.paid_now_rupees,
+      discount: action.discount_rupees,
+      items: action.items.map((item) => ({
+        name: item.catalog_item_name,
+        quantity: item.quantity,
+        unit: item.unit,
+        amount: item.line_amount_rupees,
+      })),
+    })),
+  });
+
+  return { intent, actions, unclear: plan.unclear };
 }

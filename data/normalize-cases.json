@@ -1,0 +1,15 @@
+[
+  { "input": "rahul ko paanch kilo atta udhaar", "output": "rahul ko 5 kilo atta udhaar" },
+  { "input": "do kilo chini swayam udhaar", "output": "2 kilo chini swayam udhaar" },
+  { "input": "do we have atta", "output": "do we have atta" },
+  { "input": "aadha kilo sugar utkarsh udhaar", "output": "0.5 kilo sugar utkarsh udhaar" },
+  { "input": "dedh kilo atta rahul udhaar", "output": "1.5 kilo atta rahul udhaar" },
+  { "input": "dhai packet maggi", "output": "2.5 packet maggi" },
+  { "input": "sawa kilo atta", "output": "1.25 kilo atta" },
+  { "input": "paune kilo atta", "output": "0.75 kilo atta" },
+  { "input": "saadhe kilo tel", "output": "1.5 kilo tel" },
+  { "input": "ek teen saat nau", "output": "1379" },
+  { "input": "double five", "output": "55" },
+  { "input": "Number 2.", "output": "2" },
+  { "input": "rahul ko २०० रुपये diye", "output": "rahul ko 200 रुपये diye" }
+]

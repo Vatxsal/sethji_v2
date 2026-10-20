@@ -186,9 +186,20 @@
     "customer": "Rahul",
     "customer_names_count": 2,
     "payment": "udhaar",
-    "items": [
-      { "catalog_item_name": "Atta", "quantity": 1 },
-      { "catalog_item_name": "Sugar", "quantity": 2 }
+    "items": [{ "catalog_item_name": "Atta", "quantity": 1 }],
+    "actions": [
+      {
+        "type": "order",
+        "customer": "Rahul",
+        "payment": "udhaar",
+        "items": [{ "catalog_item_name": "Atta", "quantity": 1 }]
+      },
+      {
+        "type": "order",
+        "customer": "Swayam",
+        "payment": "udhaar",
+        "items": [{ "catalog_item_name": "Sugar", "quantity": 2 }]
+      }
     ]
   },
   {
@@ -196,7 +207,6 @@
     "intent": "order",
     "customer": "Rahul",
     "customer_names_count": 1,
-    "amount_rupees": 200,
     "payment": "-",
     "items": [{ "catalog_item_name": "Atta", "quantity": 1 }]
   },
@@ -247,5 +257,244 @@
   { "text": "sales report dikhao", "intent": "out_of_scope" },
   { "text": "Rahul ka kal ka hisaab", "intent": "out_of_scope" },
   { "text": "is mahine kitna udhaar hua", "intent": "out_of_scope" },
-  { "text": "GST kaise bharte hain", "intent": "out_of_scope" }
+  { "text": "GST kaise bharte hain", "intent": "out_of_scope" },
+  {
+    "text": "rahul ko 100 rupaye ka atta udhaar",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 1,
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Atta", "quantity": null, "line_amount_rupees": 100 }]
+  },
+  {
+    "text": "swayam ko 50 rupaye ka sugar cash",
+    "intent": "order",
+    "customer": "Swayam",
+    "customer_names_count": 1,
+    "payment": "cash",
+    "items": [{ "catalog_item_name": "Sugar", "quantity": null, "line_amount_rupees": 50 }]
+  },
+  {
+    "text": "rahul ne poora hisaab chuka diya",
+    "intent": "payment",
+    "customer": "Rahul",
+    "amount_mode": "full"
+  },
+  {
+    "text": "rahul ne sab de diya",
+    "intent": "payment",
+    "customer": "Rahul",
+    "amount_mode": "full"
+  },
+  {
+    "text": "rahul ne aadha de diya",
+    "intent": "payment",
+    "customer": "Rahul",
+    "amount_mode": "half"
+  },
+  {
+    "text": "rahul ka payment karo",
+    "intent": "payment",
+    "customer": "Rahul",
+    "amount_mode": "none"
+  },
+  {
+    "text": "rahul ka last wala hata do",
+    "intent": "undo",
+    "customer": "Rahul"
+  },
+  {
+    "text": "rahul ko 2 kilo atta udhaar, 50 rupaye abhi diye aur 10 rupaye chhoot",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 1,
+    "payment": "udhaar",
+    "paid_now_rupees": 50,
+    "discount_rupees": 10,
+    "items": [{ "catalog_item_name": "Atta", "quantity": 2 }]
+  },
+  { "text": "2 kilo ko 3 kilo kar do", "intent": "edit_request" },
+  { "text": "order badal do", "intent": "edit_request" },
+  {
+    "text": "rahul ko 100 rupaye aur mohan ko 2 kilo atta",
+    "intent": "payment",
+    "customer": "Rahul",
+    "customer_names_count": 2,
+    "amount_rupees": 100,
+    "amount_mode": "exact",
+    "items": [],
+    "actions": [
+      { "type": "payment", "customer": "Rahul", "amount_rupees": 100, "amount_mode": "exact" },
+      {
+        "type": "order",
+        "customer": "Mohan",
+        "items": [{ "catalog_item_name": "Atta", "quantity": 2 }]
+      }
+    ]
+  },
+  {
+    "text": "2 kilo atta rahul udhaar aur 1 kilo sugar mohan udhaar",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 2,
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Atta", "quantity": 2 }],
+    "actions": [
+      {
+        "type": "order",
+        "customer": "Rahul",
+        "payment": "udhaar",
+        "items": [{ "catalog_item_name": "Atta", "quantity": 2 }]
+      },
+      {
+        "type": "order",
+        "customer": "Mohan",
+        "payment": "udhaar",
+        "items": [{ "catalog_item_name": "Sugar", "quantity": 1 }]
+      }
+    ]
+  },
+  {
+    "text": "rahul ko 2 kilo atta aur 100 rupaye payment",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 1,
+    "items": [{ "catalog_item_name": "Atta", "quantity": 2 }],
+    "actions": [
+      {
+        "type": "order",
+        "customer": "Rahul",
+        "items": [{ "catalog_item_name": "Atta", "quantity": 2 }]
+      },
+      { "type": "payment", "customer": "Rahul", "amount_rupees": 100, "amount_mode": "exact" }
+    ]
+  },
+  {
+    "text": "rahul ko 2 kilo atta aur 1 kilo sugar",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 1,
+    "items": [
+      { "catalog_item_name": "Atta", "quantity": 2 },
+      { "catalog_item_name": "Sugar", "quantity": 1 }
+    ],
+    "actions": [
+      {
+        "type": "order",
+        "customer": "Rahul",
+        "items": [
+          { "catalog_item_name": "Atta", "quantity": 2 },
+          { "catalog_item_name": "Sugar", "quantity": 1 }
+        ]
+      }
+    ]
+  },
+  {
+    "text": "rahul ka bill banao",
+    "intent": "bill",
+    "customer": "Rahul",
+    "actions": [{ "type": "bill", "customer": "Rahul" }]
+  },
+  {
+    "text": "rahul ka hisaab aur mohan ka hisaab",
+    "intent": "balance",
+    "customer": "Rahul",
+    "customer_names_count": 2,
+    "actions": [
+      { "type": "balance", "customer": "Rahul" },
+      { "type": "balance", "customer": "Mohan" }
+    ]
+  },
+  {
+    "text": "rahul ka bill aur mohan ka hisaab",
+    "intent": "bill",
+    "customer": "Rahul",
+    "customer_names_count": 2,
+    "actions": [
+      { "type": "bill", "customer": "Rahul" },
+      { "type": "balance", "customer": "Mohan" }
+    ]
+  },
+  {
+    "text": "rahul ko 2 kilo atta aur mohan ko 100 rupaye payment",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 2,
+    "items": [{ "catalog_item_name": "Atta", "quantity": 2 }],
+    "actions": [
+      {
+        "type": "order",
+        "customer": "Rahul",
+        "items": [{ "catalog_item_name": "Atta", "quantity": 2 }]
+      },
+      { "type": "payment", "customer": "Mohan", "amount_rupees": 100, "amount_mode": "exact" }
+    ]
+  },
+  {
+    "text": "rahul ka last wala entry hata do",
+    "intent": "undo",
+    "customer": "Rahul",
+    "actions": [{ "type": "undo", "customer": "Rahul" }]
+  },
+  {
+    "text": "rahul ke order me 2 kilo ko 3 kilo kar do",
+    "intent": "edit_request",
+    "customer": "Rahul",
+    "actions": [{ "type": "edit_request", "customer": "Rahul" }]
+  },
+  {
+    "text": "rahul ko 1 kilo sugar udhaar aur uska 50 payment",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 1,
+    "payment": "udhaar",
+    "items": [{ "catalog_item_name": "Sugar", "quantity": 1 }],
+    "actions": [
+      {
+        "type": "order",
+        "customer": "Rahul",
+        "payment": "udhaar",
+        "items": [{ "catalog_item_name": "Sugar", "quantity": 1 }]
+      },
+      { "type": "payment", "customer": "Rahul", "amount_rupees": 50, "amount_mode": "exact" }
+    ]
+  },
+  {
+    "text": "swayam ko 1 kilo sugar, utkarsh ko 1 packet maggi, rahul ko 1 kilo atta",
+    "intent": "order",
+    "customer": "Swayam",
+    "customer_names_count": 3,
+    "items": [{ "catalog_item_name": "Sugar", "quantity": 1 }],
+    "actions": [
+      {
+        "type": "order",
+        "customer": "Swayam",
+        "items": [{ "catalog_item_name": "Sugar", "quantity": 1 }]
+      },
+      {
+        "type": "order",
+        "customer": "Utkarsh",
+        "items": [{ "catalog_item_name": "Maggi", "quantity": 1 }]
+      },
+      {
+        "type": "order",
+        "customer": "Rahul",
+        "items": [{ "catalog_item_name": "Atta", "quantity": 1 }]
+      }
+    ]
+  },
+  {
+    "text": "100 rupaye ka atta rahul ko do",
+    "intent": "order",
+    "customer": "Rahul",
+    "customer_names_count": 1,
+    "items": [{ "catalog_item_name": "Atta", "quantity": null, "line_amount_rupees": 100 }],
+    "actions": [
+      {
+        "type": "order",
+        "customer": "Rahul",
+        "items": [{ "catalog_item_name": "Atta", "quantity": null, "line_amount_rupees": 100 }]
+      }
+    ]
+  }
 ]

@@ -29,6 +29,10 @@ function balanceLine(paise: number): string {
   return paise < 0 ? formatBalance(paise) : `Balance: ${formatPaise(paise)}`;
 }
 
+export function formatRupees(paise: number): string {
+  return paise % 100 === 0 ? String(paise / 100) : (paise / 100).toFixed(2);
+}
+
 export function replyOrderSummary(input: {
   customerName: string | null;
   lines: string[];
@@ -36,12 +40,14 @@ export function replyOrderSummary(input: {
   paymentMethod: string;
   balancePaise: number | null;
   prefixLine?: string | null;
+  splitLine?: string | null;
 }): string {
   const who = input.customerName ? `${input.customerName} - ` : "";
   const summary = `${who}${input.lines.join(", ")} - ${formatPaise(input.totalPaise)} - ${input.paymentMethod}`;
   const parts: string[] = [];
   if (input.prefixLine) parts.push(input.prefixLine);
   parts.push(summary);
+  if (input.splitLine) parts.push(input.splitLine);
   if (input.paymentMethod === "udhaar" && input.balancePaise !== null) {
     parts.push(balanceLine(input.balancePaise));
   }
@@ -66,6 +72,10 @@ export function replyPaymentNeedsAmount(): string {
 
 export function replyPaymentDone(name: string, amountPaise: number, balancePaise: number): string {
   return `${name} se ${formatPaise(amountPaise)} mile. ${balanceLine(balancePaise)}`;
+}
+
+export function replyNoBalance(name: string): string {
+  return `${name} ka kuch baaki nahi hai.`;
 }
 
 export function replyBalance(customerName: string, balancePaise: number): string {
@@ -137,6 +147,10 @@ export function replyNewCustomerConfirm(name: string, last4: string): string {
   return `Naya customer: ${name} (${last4}). Order uske naam pe save karein?`;
 }
 
+export function replyNearMatch(enteredName: string, matchedLabel: string): string {
+  return `${enteredName} naam ka customer nahi mila. ${matchedLabel} hai kya?`;
+}
+
 export function replyNewCustomerMade(name: string, last4: string | null): string {
   return last4
     ? `Naya customer bana: ${name} (${last4})`
@@ -159,11 +173,14 @@ export function replyConfirmSummary(input: {
   totalPaise: number;
   paymentMethod: string;
   transcript?: string | null;
+  splitLine?: string | null;
+  sahi?: boolean;
 }): string {
   const who = input.customerName ?? "bina naam";
-  const lines = [`Ye bill hoga (${who}):`];
+  const lines = [input.sahi ? `Ye bill sahi hai (${who}):` : `Ye bill hoga (${who}):`];
   for (const line of input.billLines) lines.push(`- ${line}`);
   if (input.skipped.length > 0) lines.push(`Skip: ${input.skipped.join(", ")}`);
+  if (input.splitLine) lines.push(input.splitLine);
   lines.push(`Total: ${formatPaise(input.totalPaise)} - ${input.paymentMethod}`);
   if (input.transcript) lines.push(`Voice bola: ${input.transcript}`);
   return lines.join("\n");
@@ -207,8 +224,59 @@ export function replyQuantityUnclear(itemName: string): string {
   return `${itemName} ki quantity samajh nahi aayi. Dobara bhejein, jaise: 2 kilo atta`;
 }
 
-export function replyOneThing(): string {
-  return "Ek message me ek customer aur ek kaam bhejein. Alag alag bhejein.";
+export function replyWholeUnitsOnly(itemName: string, unit: string): string {
+  return `${itemName} ${unit} me bhejein, jaise: 2 ${unit} ${itemName.toLowerCase()}`;
+}
+
+export function replySplitPreview(input: {
+  totalPaise: number;
+  discountPaise: number;
+  paidPaise: number;
+}): string {
+  const parts = [formatPaise(input.totalPaise)];
+  if (input.discountPaise > 0) parts.push(`${formatPaise(input.discountPaise)} chhoot`);
+  if (input.paidPaise > 0) parts.push(`${formatPaise(input.paidPaise)} diye`);
+  const balance = input.totalPaise - input.discountPaise - input.paidPaise;
+  const tail = balance > 0 ? `${formatPaise(balance)} baaki` : formatPaise(balance);
+  return `${parts.join(" - ")} = ${tail}`;
+}
+
+export function replySplitOverTotal(): string {
+  return "Diye aur chhoot milkar total se zyada ho gaya. Dobara bhejein.";
+}
+
+export function replyEditRequest(): string {
+  return "Order edit nahi hota. 'undo' bhejein, phir sahi order dobara bhejein.";
+}
+
+export function replyPlanTooManyActions(): string {
+  return "Ek message me 5 se zyada kaam nahi le sakta. Thoda alag alag bhejein.";
+}
+
+export function replyPlanPreview(input: { transcript: string | null; lines: string[] }): string {
+  const out: string[] = [];
+  if (input.transcript) out.push(`Maine suna: "${input.transcript}"`);
+  input.lines.forEach((line, index) => out.push(`${index + 1}) ${line}`));
+  return out.join("\n");
+}
+
+export function replyPlanDone(input: { lines: string[]; balances: string[] }): string {
+  const out: string[] = [];
+  input.lines.forEach((line, index) => out.push(`${index + 1}) ${line}`));
+  out.push(...input.balances);
+  return out.join("\n");
+}
+
+export function replyPlanFailed(): string {
+  return "Kuch gadbad hui, kuch save nahi hua.";
+}
+
+export function replyPlanBillLine(invoiceNumber: string): string {
+  return `Bill #${invoiceNumber} bhej diya`;
+}
+
+export function replyPlanBillsCapped(): string {
+  return "Ek saath zyada se 2 bill bhej sakta hoon.";
 }
 
 export function replyAmountInvalid(): string {
@@ -224,8 +292,7 @@ export function replyInvalidName(): string {
 }
 
 export function replyCatalogItemLine(itemName: string, pricePaise: number, unit: string): string {
-  const rupees = pricePaise % 100 === 0 ? String(pricePaise / 100) : (pricePaise / 100).toFixed(2);
-  return `${itemName} - Rs ${rupees}/${unit}`;
+  return `${itemName} - Rs ${formatRupees(pricePaise)}/${unit}`;
 }
 
 export function replyCatalogList(shownLines: string[], totalItems: number): string {

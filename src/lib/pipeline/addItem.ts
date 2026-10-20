@@ -1,28 +1,27 @@
 import { rupeesToPaise } from "@/lib/money";
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
-import { sendText } from "@/lib/whatsapp/send";
-import type { IntentContext } from "./context";
-import { replyAddItem, replyAddItemBadUnit, replyAddItemMissing } from "./replies";
 
-const ALLOWED_UNITS = ["kg", "g", "l", "ml", "packet", "piece", "dozen"];
+export const ALLOWED_UNITS = ["kg", "g", "l", "ml", "packet", "piece", "dozen"];
 
-export async function handleAddItemIntent(ctx: IntentContext): Promise<void> {
-  const { shopId, senderPhone, messageId, extracted } = ctx;
-  const newItem = extracted.new_item;
+export type AddItemResult =
+  | { ok: true; name: string; pricePaise: number; unit: string }
+  | { ok: false; reason: "missing" | "bad_unit" };
+
+export async function performAddItem(
+  shopId: string,
+  newItem: { name: string; price_rupees: number; unit: string } | null,
+  msgId?: string,
+): Promise<AddItemResult> {
   const name = newItem?.name?.trim() ?? "";
   const priceRupees = newItem?.price_rupees ?? 0;
   const unit = newItem?.unit?.trim().toLowerCase() ?? "";
 
   if (!name || priceRupees <= 0) {
-    ctx.setOutcome?.("refused");
-    await sendText(senderPhone, replyAddItemMissing());
-    return;
+    return { ok: false, reason: "missing" };
   }
   if (!ALLOWED_UNITS.includes(unit)) {
-    ctx.setOutcome?.("refused");
-    await sendText(senderPhone, replyAddItemBadUnit());
-    return;
+    return { ok: false, reason: "bad_unit" };
   }
 
   const sb = getSupabase();
@@ -56,7 +55,6 @@ export async function handleAddItemIntent(ctx: IntentContext): Promise<void> {
     if (error) throw error;
   }
 
-  log(messageId, "item_upserted", { name, pricePaise, unit });
-  await sendText(senderPhone, replyAddItem(name, pricePaise, unit));
-  ctx.setOutcome?.("saved");
+  log(msgId, "item_upserted", { name, pricePaise, unit });
+  return { ok: true, name, pricePaise, unit };
 }

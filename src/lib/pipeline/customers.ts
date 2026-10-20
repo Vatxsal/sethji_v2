@@ -15,6 +15,7 @@ export type CustomerResolution =
   | { status: "none" }
   | { status: "ambiguous"; candidates: CustomerRow[] }
   | { status: "new_last4_confirm"; name: string; last4: string }
+  | { status: "near_match"; customer: CustomerRow; enteredName: string }
   | { status: "invalid_name" }
   | { status: "error"; error: unknown };
 
@@ -40,6 +41,71 @@ export function normalizeName(name: string): string {
   out = out.replace(/[^a-z]/g, "");
   out = out.replace(/(.)\1+/g, "$1");
   return out;
+}
+
+function consonantSkeleton(key: string): string {
+  return key.replace(/[aeiou]/g, "");
+}
+
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 2) return 99;
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const temp = prev[j];
+      prev[j] = Math.min(
+        prev[j] + 1,
+        prev[j - 1] + 1,
+        diagonal + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      diagonal = temp;
+    }
+  }
+  return prev[b.length];
+}
+
+function isNearMatch(enteredKey: string, candidateKey: string): boolean {
+  if (enteredKey === candidateKey) return false;
+  if (enteredKey.length < 4 || candidateKey.length < 4) return false;
+  const distance = editDistance(enteredKey, candidateKey);
+  const allowed = enteredKey.length >= 8 ? 2 : 1;
+  if (distance <= allowed) return true;
+  const enteredSkeleton = consonantSkeleton(enteredKey);
+  const candidateSkeleton = consonantSkeleton(candidateKey);
+  if (enteredSkeleton.length >= 2 && enteredSkeleton === candidateSkeleton) return true;
+  return false;
+}
+
+async function findNearMatchCustomer(
+  shopId: string,
+  name: string,
+  msgId?: string,
+): Promise<CustomerRow | null> {
+  const enteredKey = normalizeName(name);
+  if (enteredKey.length < 4) return null;
+  try {
+    const { data, error } = await getSupabase()
+      .from("customers")
+      .select("id, display_name, disambiguator")
+      .eq("shop_id", shopId)
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    const rows = (data ?? []) as CustomerRow[];
+    for (const row of rows) {
+      const candidateKey = normalizeName(row.display_name);
+      if (isNearMatch(enteredKey, candidateKey)) {
+        log(msgId, "customer_near_match_found", { entered: name, matched: row.display_name });
+        return row;
+      }
+    }
+  } catch (error) {
+    log(msgId, "customer_near_match_error", { error });
+  }
+  return null;
 }
 
 export async function customerLabel(
@@ -201,6 +267,10 @@ export async function resolveCustomer(
     }
 
     if (candidates.length === 0) {
+      const near = await findNearMatchCustomer(shopId, name, msgId);
+      if (near) {
+        return { status: "near_match", customer: near, enteredName: name };
+      }
       const created = await createCustomer(shopId, name, key, null);
       if (!created) {
         log(msgId, "invalid_name", { name });

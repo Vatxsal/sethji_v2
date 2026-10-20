@@ -1,30 +1,20 @@
-import { STT_CONFIDENCE_THRESHOLD, LARGE_AMOUNT_PAISE } from "@/config";
-import { formatPaise, formatQuantity } from "@/lib/money";
+import { formatPaise, formatQuantity, rupeesToPaise } from "@/lib/money";
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
-import { sendButtons, sendText } from "@/lib/whatsapp/send";
 import { getCustomerBalance } from "./balances";
-import {
-  customerLabel,
-  getCustomerById,
-  resolveCustomer,
-  type CustomerRow,
-} from "./customers";
-import type { IntentContext, OrderContext } from "./context";
-import type { CatalogItem, ExtractedIntent } from "./extract";
-import { createPending } from "./pending";
-import {
-  replyConfirmSummary,
-  replyError,
-  replyInvalidName,
-  replyItemNotInCatalog,
-  replyNewCustomerConfirm,
-  replyOrderSummary,
-  replyPickCustomerList,
-  replyQuantityUnclear,
-  replyUdhaarNeedsCustomer,
-  replyUnitMismatch,
-} from "./replies";
+import type { CatalogItem, ExtractedAction } from "./extract";
+import { formatRupees } from "./replies";
+
+export async function loadCatalog(shopId: string): Promise<CatalogItem[]> {
+  const { data, error } = await getSupabase()
+    .from("catalog_items")
+    .select("id, name, unit_type, price_per_unit_paise, gst_rate_percent")
+    .eq("shop_id", shopId)
+    .eq("is_active", true)
+    .limit(300);
+  if (error) throw error;
+  return (data ?? []) as CatalogItem[];
+}
 
 export type BillableLine = {
   catalogItemId: string;
@@ -33,49 +23,7 @@ export type BillableLine = {
   unit: string;
   unitPricePaise: number;
   lineTotalPaise: number;
-};
-
-export type ConfirmOrderPayload = {
-  kind: "order";
-  sourceMessageId: string | null;
-  customerId: string | null;
-  customerName: string | null;
-  paymentMethod: string;
-  lines: BillableLine[];
-  skipped: string[];
-  totalPaise: number;
-  rawInputType?: string;
-  confidenceScore?: number | null;
-  transcript?: string | null;
-  prefixLine?: string | null;
-};
-
-export type NewCustomerOrderPayload = {
-  kind: "new_customer_order";
-  name: string;
-  last4: string;
-  sourceMessageId: string | null;
-  paymentMethod: string;
-  lines: BillableLine[];
-  totalPaise: number;
-  rawInputType?: string;
-  confidenceScore?: number | null;
-  transcript?: string | null;
-};
-
-export type PickCustomerPayload = {
-  extracted: ExtractedIntent;
-  candidates: CustomerRow[];
-  sourceMessageId: string | null;
-  rawInputType?: string;
-  confidenceScore?: number | null;
-  transcript?: string | null;
-};
-
-export type NameAwaitPayload = {
-  awaiting: "name";
-  intent: ExtractedIntent;
-  sourceMessageId: string | null;
+  valueBased?: boolean;
 };
 
 function convertQuantity(quantity: number, from: string, to: string): number | null {
@@ -120,20 +68,29 @@ export function matchCatalogItem(
   return matches.length === 1 ? matches[0] : null;
 }
 
-type UnitMismatch = { itemName: string; catalogUnit: string; spokenUnit: string };
+export type UnitMismatch = { itemName: string; catalogUnit: string; spokenUnit: string };
+export type WholeUnitProblem = { itemName: string; unit: string };
 
-function buildLines(
-  extracted: ExtractedIntent,
+const DISCRETE_UNITS = new Set(["piece", "packet", "dozen"]);
+
+export function buildLines(
+  action: ExtractedAction,
   catalog: CatalogItem[],
-): { lines: BillableLine[]; problems: string[]; unitMismatch: UnitMismatch | null } {
+): {
+  lines: BillableLine[];
+  problems: string[];
+  unitMismatch: UnitMismatch | null;
+  wholeUnit: WholeUnitProblem | null;
+} {
   const byLowerName = new Map<string, CatalogItem>();
   for (const item of catalog) byLowerName.set(item.name.toLowerCase(), item);
 
   const lines: BillableLine[] = [];
   const problems: string[] = [];
   let unitMismatch: UnitMismatch | null = null;
+  let wholeUnit: WholeUnitProblem | null = null;
 
-  for (const item of extracted.items) {
+  for (const item of action.items) {
     const spoken = item.spoken_name || item.catalog_item_name || "item";
     let row = item.catalog_item_name
       ? byLowerName.get(item.catalog_item_name.toLowerCase()) ?? null
@@ -144,6 +101,42 @@ function buildLines(
       problems.push(spoken);
       continue;
     }
+
+    const valueRupees = item.line_amount_rupees ?? null;
+    if (valueRupees !== null) {
+      const amountPaise = rupeesToPaise(valueRupees);
+      const price = row.price_per_unit_paise;
+      if (amountPaise <= 0 || price <= 0) {
+        problems.push(spoken);
+        continue;
+      }
+      const rawQuantity = amountPaise / price;
+      let quantity: number;
+      if (DISCRETE_UNITS.has(row.unit_type)) {
+        quantity = Math.round(rawQuantity);
+        if (quantity <= 0 || Math.abs(rawQuantity - quantity) > 1e-6) {
+          if (!wholeUnit) wholeUnit = { itemName: row.name, unit: row.unit_type };
+          continue;
+        }
+      } else {
+        quantity = Math.round(rawQuantity * 1000) / 1000;
+        if (quantity <= 0) {
+          problems.push(spoken);
+          continue;
+        }
+      }
+      lines.push({
+        catalogItemId: row.id,
+        itemName: row.name,
+        quantity,
+        unit: row.unit_type,
+        unitPricePaise: price,
+        lineTotalPaise: amountPaise,
+        valueBased: true,
+      });
+      continue;
+    }
+
     if (item.quantity === null || !Number.isFinite(item.quantity) || item.quantity <= 0) {
       problems.push(spoken);
       continue;
@@ -172,7 +165,12 @@ function buildLines(
   }
 
   const merged = new Map<string, BillableLine>();
+  let valueIndex = 0;
   for (const line of lines) {
+    if (line.valueBased) {
+      merged.set(`value:${valueIndex++}`, { ...line });
+      continue;
+    }
     const key = `${line.catalogItemId}|${line.unit}`;
     const existing = merged.get(key);
     if (existing) {
@@ -183,32 +181,38 @@ function buildLines(
     }
   }
 
-  return { lines: [...merged.values()], problems, unitMismatch };
+  return { lines: [...merged.values()], problems, unitMismatch, wholeUnit };
 }
 
-function describeLines(lines: BillableLine[]): string[] {
-  return lines.map(
-    (line) =>
-      `${formatQuantity(line.quantity)} ${line.unit} ${line.itemName.toLowerCase()} - ${formatPaise(line.lineTotalPaise)}`,
-  );
+export function orderLineSummary(line: BillableLine): string {
+  if (line.valueBased) {
+    return `Rs ${formatRupees(line.lineTotalPaise)} ka ${line.itemName.toLowerCase()} = ${formatQuantity(line.quantity)} ${line.unit}`;
+  }
+  return `${formatQuantity(line.quantity)} ${line.unit} ${line.itemName.toLowerCase()} - ${formatPaise(line.lineTotalPaise)}`;
 }
 
-export async function saveConfirmedOrder(params: {
+export function orderLinesSummary(lines: BillableLine[]): string[] {
+  return lines.map(orderLineSummary);
+}
+
+export async function writeConfirmedOrder(params: {
   shopId: string;
-  senderPhone: string;
   messageId: string;
   sourceMessageId: string | null;
   customerId: string | null;
-  customerName: string | null;
   paymentMethod: string;
   lines: BillableLine[];
   totalPaise: number;
+  paidNowPaise?: number;
+  discountPaise?: number;
   rawInputType?: string;
   confidenceScore?: number | null;
-  prefixLine?: string | null;
-}): Promise<void> {
-  const { shopId, senderPhone, messageId } = params;
+}): Promise<{ orderId: string; balancePaise: number | null }> {
+  const { shopId, messageId } = params;
   const sb = getSupabase();
+  const paidNowPaise = params.paidNowPaise ?? 0;
+  const discountPaise = params.discountPaise ?? 0;
+  const grpNotes = params.sourceMessageId ? `grp:${params.sourceMessageId}` : null;
 
   const { data: orderRow, error: orderError } = await sb
     .from("orders")
@@ -251,263 +255,50 @@ export async function saveConfirmedOrder(params: {
       p_actor_type: "system",
       p_actor_user_id: null,
       p_requires_approval: false,
-      p_notes: null,
+      p_notes: grpNotes,
     });
     if (ledgerError) throw ledgerError;
+
+    if (paidNowPaise > 0) {
+      const { error: paidError } = await sb.rpc("add_ledger_entry", {
+        p_shop_id: shopId,
+        p_customer_id: params.customerId,
+        p_order_id: orderId,
+        p_entry_type: "payment_received",
+        p_amount_paise: -paidNowPaise,
+        p_actor_type: "system",
+        p_actor_user_id: null,
+        p_requires_approval: false,
+        p_notes: grpNotes,
+      });
+      if (paidError) throw paidError;
+    }
+
+    if (discountPaise > 0) {
+      const { error: waiverError } = await sb.rpc("add_ledger_entry", {
+        p_shop_id: shopId,
+        p_customer_id: params.customerId,
+        p_order_id: orderId,
+        p_entry_type: "waiver",
+        p_amount_paise: -discountPaise,
+        p_actor_type: "owner",
+        p_actor_user_id: null,
+        p_requires_approval: false,
+        p_notes: grpNotes,
+      });
+      if (waiverError) throw waiverError;
+    }
+
     balancePaise = await getCustomerBalance(params.customerId);
   }
 
-  log(messageId, "order_saved", { orderId, totalPaise: params.totalPaise, paymentMethod: params.paymentMethod });
-
-  await sendText(
-    senderPhone,
-    replyOrderSummary({
-      customerName: params.customerName,
-      lines: params.lines.map(
-        (line) => `${formatQuantity(line.quantity)} ${line.unit} ${line.itemName.toLowerCase()}`,
-      ),
-      totalPaise: params.totalPaise,
-      paymentMethod: params.paymentMethod,
-      balancePaise,
-      prefixLine: params.prefixLine ?? null,
-    }),
-  );
-}
-
-export async function startCustomerPick(
-  ctx: IntentContext,
-  candidates: CustomerRow[],
-  allowNaya = ctx.extracted.intent === "order",
-): Promise<void> {
-  const balances = await Promise.all(
-    candidates.map(async (row) => ({
-      name: row.display_name,
-      disambiguator: row.disambiguator,
-      balancePaise: await getCustomerBalance(row.id),
-    })),
-  );
-
-  await createPending(
-    ctx.shopId,
-    ctx.senderPhone,
-    "pick_customer",
-    {
-      extracted: ctx.extracted,
-      candidates,
-      sourceMessageId: ctx.messageId,
-      rawInputType: ctx.rawInputType ?? "text",
-      confidenceScore: ctx.confidenceScore ?? null,
-      transcript: ctx.transcript ?? null,
-    } satisfies PickCustomerPayload,
-    ctx.messageId,
-  );
-
-  ctx.setOutcome?.("asked_customer");
-  await sendText(ctx.senderPhone, replyPickCustomerList(balances, allowNaya));
-}
-
-export async function handleOrderIntent(ctx: OrderContext): Promise<void> {
-  const { extracted, catalog, shopId, senderPhone, messageId } = ctx;
-  const sourceMessageId = ctx.sourceMessageId ?? messageId;
-  const sb = getSupabase();
-
-  for (const item of extracted.items) {
-    if (item.quantity === null || !Number.isFinite(item.quantity) || item.quantity <= 0) {
-      const spoken = item.spoken_name || item.catalog_item_name || "item";
-      log(messageId, "order_bad_quantity", { item: spoken, quantity: item.quantity });
-      ctx.setOutcome?.("refused");
-      await sendText(senderPhone, replyQuantityUnclear(spoken));
-      return;
-    }
-  }
-
-  const customerNamed = Boolean(extracted.customer_name && extracted.customer_name.trim() !== "");
-  let paymentMethod = extracted.payment_method;
-  if (!paymentMethod) paymentMethod = customerNamed ? "udhaar" : "cash";
-
-  if (paymentMethod === "udhaar" && !customerNamed) {
-    log(messageId, "order_no_customer", {});
-    await createPending(
-      shopId,
-      senderPhone,
-      "pick_customer",
-      {
-        awaiting: "name",
-        intent: extracted,
-        sourceMessageId,
-      } satisfies NameAwaitPayload,
-      messageId,
-    );
-    ctx.setOutcome?.("asked_customer");
-    await sendText(senderPhone, replyUdhaarNeedsCustomer());
-    return;
-  }
-
-  let customer: CustomerRow | null = null;
-  let justCreatedName: string | null = null;
-  if (ctx.forcedCustomerId) {
-    customer = await getCustomerById(shopId, ctx.forcedCustomerId);
-    if (!customer) {
-      ctx.setOutcome?.("error");
-      await sendText(senderPhone, replyError());
-      return;
-    }
-    log(messageId, "customer_forced", { customerId: customer.id });
-  } else if (customerNamed) {
-    const resolution = await resolveCustomer(shopId, extracted, messageId);
-    if (resolution.status === "ambiguous") {
-      await startCustomerPick(ctx, resolution.candidates, true);
-      return;
-    }
-    if (resolution.status === "new_last4_confirm") {
-      const { lines, problems, unitMismatch } = buildLines(extracted, catalog);
-      if (unitMismatch) {
-        log(messageId, "order_unit_mismatch", unitMismatch);
-        ctx.setOutcome?.("refused");
-        await sendText(senderPhone, replyUnitMismatch(unitMismatch.itemName, unitMismatch.catalogUnit));
-        return;
-      }
-      if (lines.length === 0) {
-        log(messageId, "order_unbillable", { problems });
-        ctx.setOutcome?.("refused");
-        await sendText(senderPhone, replyItemNotInCatalog(problems[0] ?? "item"));
-        return;
-      }
-      const totalPaise = lines.reduce((sum, line) => sum + line.lineTotalPaise, 0);
-      const payload: NewCustomerOrderPayload = {
-        kind: "new_customer_order",
-        name: resolution.name,
-        last4: resolution.last4,
-        sourceMessageId,
-        paymentMethod,
-        lines,
-        totalPaise,
-        rawInputType: ctx.rawInputType ?? "text",
-        confidenceScore: ctx.confidenceScore ?? null,
-        transcript: ctx.transcript ?? null,
-      };
-      const pendingId = await createPending(
-        shopId,
-        senderPhone,
-        "confirm_action",
-        payload,
-        messageId,
-      );
-      log(messageId, "new_customer_confirm", { pendingId, name: resolution.name, last4: resolution.last4 });
-      ctx.setOutcome?.("asked_confirm");
-      await sendButtons(
-        senderPhone,
-        replyNewCustomerConfirm(resolution.name, resolution.last4),
-        [
-          { id: `confirm:${pendingId}`, title: "Haan, naya banao" },
-          { id: `cancel:${pendingId}`, title: "Cancel" },
-        ],
-      );
-      return;
-    }
-    if (resolution.status === "invalid_name") {
-      ctx.setOutcome?.("refused");
-      await sendText(senderPhone, replyInvalidName());
-      return;
-    }
-    if (resolution.status === "error") {
-      ctx.setOutcome?.("error");
-      await sendText(senderPhone, replyError());
-      return;
-    }
-    if (resolution.status === "resolved") {
-      customer = resolution.customer;
-      if (resolution.justCreated) justCreatedName = customer.display_name;
-    }
-  }
-
-  const { lines, problems, unitMismatch } = buildLines(extracted, catalog);
-  if (unitMismatch) {
-    log(messageId, "order_unit_mismatch", unitMismatch);
-    ctx.setOutcome?.("refused");
-    await sendText(senderPhone, replyUnitMismatch(unitMismatch.itemName, unitMismatch.catalogUnit));
-    return;
-  }
-  if (lines.length === 0) {
-    log(messageId, "order_unbillable", { problems });
-    ctx.setOutcome?.("refused");
-    await sendText(senderPhone, replyItemNotInCatalog(problems[0] ?? "item"));
-    return;
-  }
-
-  const label = customer ? await customerLabel(shopId, customer, messageId) : null;
-  const prefixLine = justCreatedName ? `Naya customer: ${justCreatedName}` : null;
-
-  const totalPaise = lines.reduce((sum, line) => sum + line.lineTotalPaise, 0);
-
-  const lowConfidence =
-    ctx.confidenceScore !== null &&
-    ctx.confidenceScore !== undefined &&
-    ctx.confidenceScore < STT_CONFIDENCE_THRESHOLD;
-
-  const largeAmount = totalPaise > LARGE_AMOUNT_PAISE;
-
-  if (problems.length > 0 || ctx.forceConfirm || lowConfidence || largeAmount) {
-    const payload: ConfirmOrderPayload = {
-      kind: "order",
-      sourceMessageId,
-      customerId: customer?.id ?? null,
-      customerName: label,
-      paymentMethod,
-      lines,
-      skipped: problems,
-      totalPaise,
-      rawInputType: ctx.rawInputType ?? "text",
-      confidenceScore: ctx.confidenceScore ?? null,
-      transcript: ctx.transcript ?? null,
-      prefixLine,
-    };
-    const pendingId = await createPending(
-      shopId,
-      senderPhone,
-      "confirm_action",
-      payload,
-      messageId,
-    );
-    log(messageId, "order_gate", {
-      pendingId,
-      skipped: problems.length,
-      force: Boolean(ctx.forceConfirm),
-      lowConfidence,
-      largeAmount,
-    });
-    ctx.setOutcome?.(largeAmount ? "refused" : "asked_confirm");
-    await sendButtons(
-      senderPhone,
-      replyConfirmSummary({
-        customerName: label,
-        billLines: describeLines(lines),
-        skipped: problems,
-        totalPaise,
-        paymentMethod,
-        transcript: ctx.transcript ?? null,
-      }),
-      [
-        { id: `confirm:${pendingId}`, title: "Haan, save karo" },
-        { id: `cancel:${pendingId}`, title: "Cancel" },
-      ],
-    );
-    return;
-  }
-
-  await saveConfirmedOrder({
-    shopId,
-    senderPhone,
-    messageId,
-    sourceMessageId,
-    customerId: customer?.id ?? null,
-    customerName: label,
-    paymentMethod,
-    lines,
-    totalPaise,
-    rawInputType: ctx.rawInputType,
-    confidenceScore: ctx.confidenceScore,
-    prefixLine,
+  log(messageId, "order_saved", {
+    orderId,
+    totalPaise: params.totalPaise,
+    paymentMethod: params.paymentMethod,
+    paidNowPaise,
+    discountPaise,
   });
-  ctx.setOutcome?.("saved");
+
+  return { orderId, balancePaise };
 }

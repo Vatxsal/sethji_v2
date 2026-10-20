@@ -1,4 +1,4 @@
-export const LLM_MODEL = "llama-3.3-70b-versatile";
+export const LLM_MODEL = "openai/gpt-oss-120b";
 export const GEMINI_MODEL = "gemini-2.5-flash";
 export const STT_MODEL = "whisper-large-v3";
 export const STT_LANGUAGE = "hi";

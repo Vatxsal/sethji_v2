@@ -5,9 +5,8 @@ import { getSupabase } from "@/lib/supabase";
 import { downloadMedia } from "@/lib/whatsapp/media";
 import type { IncomingMessage } from "@/lib/whatsapp/parse";
 import { markRead, sendText } from "@/lib/whatsapp/send";
-import { continueNamePending, continuePickPending, handleButtonReply, runConfirmedOrder } from "./confirm";
-import { dispatchExtractedIntent } from "./dispatch";
-import { extractIntent, type CatalogItem, type ExtractedIntent } from "./extract";
+import { dispatchPlan } from "./dispatch";
+import { extractPlan, type ExtractedPlan } from "./extract";
 import {
   createMessageLogState,
   errorTextOf,
@@ -16,12 +15,12 @@ import {
   type OutcomeSink,
 } from "./messageLog";
 import { getOpenPending, resolvePending } from "./pending";
-import { matchCatalogItem } from "./order";
+import { loadCatalog } from "./order";
+import { normalizeNumbers } from "./numbers";
+import { continuePlanPending, handlePlanButtonReply } from "./plan";
 import { saveVoiceNote, transcribeVoice } from "./stt";
 import { fetchKnownCustomers, hasBusinessSignal } from "./understand";
 import {
-  replyCatalogItemLine,
-  replyCatalogList,
   replyConnected,
   replyError,
   replyNotRegistered,
@@ -31,79 +30,11 @@ import {
   replyVoiceUnclear,
 } from "./replies";
 
-const MAX_CATALOG_LINES = 30;
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function namedCatalogItem(
-  extracted: ExtractedIntent,
-  text: string,
-  catalog: CatalogItem[],
-): CatalogItem | null {
-  const byLowerName = new Map<string, CatalogItem>();
-  for (const item of catalog) byLowerName.set(item.name.toLowerCase(), item);
-
-  if (extracted.items.length > 1) return null;
-  if (extracted.items.length === 1) {
-    const entry = extracted.items[0];
-    const name = (entry.catalog_item_name ?? entry.spoken_name ?? "").trim();
-    if (!name) return null;
-    const match = byLowerName.get(name.toLowerCase()) ?? matchCatalogItem(name, catalog, byLowerName);
-    if (match) return match;
-  }
-
-  const lower = text.toLowerCase();
-  const matches: CatalogItem[] = [];
-  for (const item of catalog) {
-    for (const word of item.name.toLowerCase().split(/\s+/)) {
-      if (word.length < 2) continue;
-      if (new RegExp(`\\b${escapeRegExp(word)}\\b`).test(lower)) {
-        matches.push(item);
-        break;
-      }
-    }
-  }
-  return matches.length === 1 ? matches[0] : null;
-}
-
-function buildCatalogListReply(
-  extracted: ExtractedIntent,
-  text: string,
-  catalog: CatalogItem[],
-): string {
-  const single = namedCatalogItem(extracted, text, catalog);
-  if (single) return replyCatalogItemLine(single.name, single.price_per_unit_paise, single.unit_type);
-  const sorted = [...catalog].sort((a, b) =>
-    a.name.localeCompare(b.name, "en", { sensitivity: "base" }),
-  );
-  const shown = sorted
-    .slice(0, MAX_CATALOG_LINES)
-    .map((item) => replyCatalogItemLine(item.name, item.price_per_unit_paise, item.unit_type));
-  return replyCatalogList(shown, sorted.length);
-}
-
 function isGreeting(text: string): boolean {
   const trimmed = text.trim();
   return (
     trimmed.length <= 20 && /^(hi|hey|hello|namaste|namaskaar|namaskar|hii+|salam)\b/i.test(trimmed)
   );
-}
-
-function isConfirmText(text: string): boolean {
-  return /^(haan|yes|ok)$/i.test(text.trim());
-}
-
-async function loadCatalog(shopId: string): Promise<CatalogItem[]> {
-  const { data, error } = await getSupabase()
-    .from("catalog_items")
-    .select("id, name, unit_type, price_per_unit_paise, gst_rate_percent")
-    .eq("shop_id", shopId)
-    .eq("is_active", true)
-    .limit(300);
-  if (error) throw error;
-  return (data ?? []) as CatalogItem[];
 }
 
 function describeError(error: unknown): Record<string, unknown> {
@@ -158,50 +89,35 @@ async function handleInboundText(
   const setOutcome: OutcomeSink = (outcome) => {
     state.outcome = outcome;
   };
-  const setParsed = (intent: ExtractedIntent): void => {
-    state.parsed = intent;
+  const setParsed = (plan: ExtractedPlan): void => {
+    state.parsed = plan;
   };
   state.sttConfidence = opts.confidenceScore;
 
   const pending = await getOpenPending(shopId, senderPhone);
 
-  if (pending && pending.action_type === "pick_customer") {
-    const awaitingName =
-      ((pending.payload as { awaiting?: string } | null)?.awaiting ?? null) === "name";
-    const catalog = await loadCatalog(shopId);
-    const continued = awaitingName
-      ? await continueNamePending({
-          pending,
-          text,
-          shopId,
-          senderPhone,
-          messageId: message.id,
-          catalog,
-          setOutcome,
-          setParsed,
-        })
-      : await continuePickPending({
-          pending,
-          text,
-          shopId,
-          senderPhone,
-          messageId: message.id,
-          catalog,
-          setOutcome,
-          setParsed,
-        });
+  if (pending && pending.action_type === "plan") {
+    const continued = await continuePlanPending({
+      pending,
+      text,
+      shopId,
+      senderPhone,
+      messageId: message.id,
+      setOutcome,
+      setParsed,
+    });
     if (continued) {
       await markProcessedDone(message.id, shopId);
       return;
     }
     await resolvePending(pending.id, "cancelled");
-    log(message.id, awaitingName ? "name_pending_cancelled" : "pick_cancelled", {
+    log(message.id, "plan_pending_cancelled", { pendingId: pending.id });
+  } else if (pending) {
+    await resolvePending(pending.id, "cancelled");
+    log(message.id, "legacy_pending_cancelled", {
       pendingId: pending.id,
+      actionType: pending.action_type,
     });
-  } else if (pending && pending.action_type === "confirm_action" && isConfirmText(text)) {
-    await runConfirmedOrder({ pending, shopId, senderPhone, messageId: message.id, setOutcome });
-    await markProcessedDone(message.id, shopId);
-    return;
   }
 
   if (isGreeting(text)) {
@@ -213,45 +129,50 @@ async function handleInboundText(
 
   const catalog = await loadCatalog(shopId);
   const customers = await fetchKnownCustomers(shopId);
-  const extracted = await extractIntent(text, catalog, customers, message.id);
-  state.parsed = extracted;
+  const normalized = normalizeNumbers(
+    text,
+    catalog.map((item) => item.name),
+  );
+  log(message.id, "normalized", { before: text, after: normalized });
+  const plan = await extractPlan(normalized, catalog, customers, message.id);
+  state.parsed = plan;
 
-  if (extracted.intent === "chitchat") {
-    setOutcome("info");
-    await sendText(senderPhone, isGreeting(text) ? replyConnected(shopName) : replyShukriya());
-    await markProcessedDone(message.id, shopId);
-    return;
-  }
-  if (extracted.intent === "catalog_list") {
-    setOutcome("info");
-    await sendText(senderPhone, buildCatalogListReply(extracted, text, catalog));
-    await markProcessedDone(message.id, shopId);
-    return;
-  }
-  if (extracted.intent === "out_of_scope") {
-    setOutcome("out_of_scope");
-    await sendText(senderPhone, replyOutOfScope());
-    await markProcessedDone(message.id, shopId);
-    return;
-  }
-  if (extracted.intent === "unknown" && !hasBusinessSignal(text, catalog)) {
-    setOutcome("out_of_scope");
-    await sendText(senderPhone, replyOutOfScope());
-    await markProcessedDone(message.id, shopId);
-    return;
+  if (plan.actions.length === 0) {
+    if (plan.intent === "chitchat") {
+      setOutcome("info");
+      await sendText(senderPhone, replyShukriya());
+      await markProcessedDone(message.id, shopId);
+      return;
+    }
+    if (plan.intent === "out_of_scope") {
+      setOutcome("out_of_scope");
+      await sendText(senderPhone, replyOutOfScope());
+      await markProcessedDone(message.id, shopId);
+      return;
+    }
+    if (plan.intent === "unknown" && !hasBusinessSignal(normalized, catalog)) {
+      setOutcome("out_of_scope");
+      await sendText(senderPhone, replyOutOfScope());
+      await markProcessedDone(message.id, shopId);
+      return;
+    }
   }
 
-  await dispatchExtractedIntent({
+  await dispatchPlan({
+    plan,
+    catalog,
+    meta: {
+      sourceMessageId: message.id,
+      rawInputType: opts.rawInputType,
+      confidenceScore: opts.confidenceScore,
+      transcript: opts.rawInputType === "voice" ? text : null,
+      text: normalized,
+    },
     shopId,
     senderPhone,
     messageId: message.id,
-    extracted,
-    catalog,
-    rawInputType: opts.rawInputType,
-    confidenceScore: opts.confidenceScore,
-    transcript: opts.rawInputType === "voice" ? text : null,
-    text,
     setOutcome,
+    setParsed,
   });
 
   await markProcessedDone(message.id, shopId);
@@ -323,7 +244,7 @@ export async function handleMessage(message: IncomingMessage): Promise<void> {
     if (shopIdError) throw shopIdError;
 
     if (message.type === "interactive" && message.buttonReplyId) {
-      await handleButtonReply({
+      await handlePlanButtonReply({
         shopId,
         senderPhone: message.from,
         messageId: message.id,

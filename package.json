@@ -9,6 +9,8 @@
     "start": "next start",
     "seed": "tsx scripts/seed.ts",
     "eval:extract": "tsx scripts/eval-extract.ts",
+    "eval:normalize": "tsx scripts/eval-normalize.ts",
+    "eval:postprocess": "tsx scripts/eval-postprocess.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -29,7 +29,7 @@ import { performBill } from "./invoice";
 import {
   buildLines,
   matchCatalogItem,
-  orderLinesSummary,
+  orderItemsSummary,
   writeConfirmedOrder,
   type BillableLine,
 } from "./order";
@@ -40,6 +40,7 @@ import {
   getPendingById,
   resolvePending,
   type PendingActionRow,
+  type PendingType,
 } from "./pending";
 import { parsePickReply, parseYesNo } from "./replyParsing";
 import { performUndo } from "./undo";
@@ -56,11 +57,13 @@ import {
   replyCancelled,
   replyCatalogItemLine,
   replyCatalogList,
+  replyConfirmSendFailed,
   replyCustomerNotFound,
   replyEditRequest,
   replyError,
   replyInvalidName,
   replyItemNotInCatalog,
+  replyLast4Only,
   replyNearMatch,
   replyNewCustomerConfirm,
   replyNoBalance,
@@ -173,6 +176,7 @@ type Ctx = {
   senderPhone: string;
   messageId: string;
   setOutcome?: OutcomeSink;
+  onStage?: (stage: string) => void;
 };
 
 type AskParams = {
@@ -291,6 +295,10 @@ function validPayload(payload: unknown): payload is PlanPayload {
   );
 }
 
+export function isPlanPendingPayload(payload: unknown): payload is PlanPayload {
+  return validPayload(payload);
+}
+
 export type PlanStartParams = {
   plan: ExtractedPlan;
   catalog: CatalogItem[];
@@ -300,10 +308,12 @@ export type PlanStartParams = {
   messageId: string;
   setOutcome?: OutcomeSink;
   setParsed?: (plan: ExtractedPlan) => void;
+  onStage?: (stage: string) => void;
 };
 
 export async function handlePlan(params: PlanStartParams): Promise<void> {
   const { plan, catalog, meta, shopId, senderPhone, messageId } = params;
+  const setStage = params.onStage ?? ((): void => {});
   params.setParsed?.(plan);
 
   if (plan.actions.length > MAX_PLAN_ACTIONS) {
@@ -322,6 +332,7 @@ export async function handlePlan(params: PlanStartParams): Promise<void> {
 
   const prepared: PreparedAction[] = [];
   for (let i = 0; i < plan.actions.length; i++) {
+    setStage(`prepare_${plan.actions[i].type}`);
     const outcome = await prepareAction({
       action: plan.actions[i],
       index: i,
@@ -337,6 +348,7 @@ export async function handlePlan(params: PlanStartParams): Promise<void> {
     prepared.push(outcome.prepared);
   }
 
+  setStage("resolve");
   await runPlan(
     {
       plan,
@@ -347,6 +359,7 @@ export async function handlePlan(params: PlanStartParams): Promise<void> {
       senderPhone,
       messageId,
       setOutcome: params.setOutcome,
+      onStage: params.onStage,
     },
     0,
   );
@@ -514,7 +527,7 @@ async function prepareAction(input: {
   }
 }
 
-async function runPlan(ctx: Ctx, resumeFrom: number): Promise<void> {
+async function runPlan(ctx: Ctx, resumeFrom: number, opts?: { skipForce?: boolean }): Promise<void> {
   const { plan, resolved, prepared, meta, shopId, senderPhone, messageId, setOutcome } = ctx;
 
   const cache = new Map<string, NonNullable<Slot>>();
@@ -531,16 +544,18 @@ async function runPlan(ctx: Ctx, resumeFrom: number): Promise<void> {
     if (!name) {
       if (action.type === "payment") {
         log(messageId, "plan_name_asked", { type: action.type });
-        await createPending(shopId, senderPhone, "plan", planPayload(ctx, "name", i), messageId);
-        setOutcome?.("asked_customer");
-        await sendText(senderPhone, replyPaymentNeedsCustomer());
+        await askGuarded(ctx, "name", "confirm_action", planPayload(ctx, "name", i), async () => {
+          setOutcome?.("asked_customer");
+          await sendText(senderPhone, replyPaymentNeedsCustomer());
+        });
         return;
       }
       if (action.type === "order" && prepared[i]?.paymentMethod === "udhaar") {
         log(messageId, "plan_name_asked", { type: action.type });
-        await createPending(shopId, senderPhone, "plan", planPayload(ctx, "name", i), messageId);
-        setOutcome?.("asked_customer");
-        await sendText(senderPhone, replyUdhaarNeedsCustomer());
+        await askGuarded(ctx, "name", "confirm_action", planPayload(ctx, "name", i), async () => {
+          setOutcome?.("asked_customer");
+          await sendText(senderPhone, replyUdhaarNeedsCustomer());
+        });
         return;
       }
       continue;
@@ -636,7 +651,7 @@ async function runPlan(ctx: Ctx, resumeFrom: number): Promise<void> {
     await executePlan(ctx);
     return;
   }
-  const force = computeForce(ctx);
+  const force = opts?.skipForce ? false : computeForce(ctx);
   if (prepared.length === 1 && !force) {
     await executePlan(ctx);
     return;
@@ -656,6 +671,38 @@ function planPayload(ctx: Ctx, awaiting: PlanPayload["awaiting"], index: number)
   };
 }
 
+async function askGuarded(
+  ctx: Ctx,
+  what: string,
+  actionType: PendingType,
+  payload: PlanPayload,
+  send: (pendingId: string) => Promise<void>,
+): Promise<void> {
+  let pendingId: string | null = null;
+  try {
+    pendingId = await createPending(ctx.shopId, ctx.senderPhone, actionType, payload, ctx.messageId);
+    await send(pendingId);
+  } catch (error) {
+    const err = error as { code?: string; details?: string; hint?: string; message?: string };
+    log(ctx.messageId, "plan_ask_failed", {
+      what,
+      message: err?.message ?? String(error),
+      code: err?.code ?? null,
+      details: err?.details ?? null,
+      hint: err?.hint ?? null,
+    });
+    if (pendingId) {
+      try {
+        await resolvePending(pendingId, "cancelled");
+      } catch (cancelError) {
+        log(ctx.messageId, "plan_ask_cancel_failed", { error: String(cancelError) });
+      }
+    }
+    ctx.setOutcome?.("error");
+    await sendText(ctx.senderPhone, replyConfirmSendFailed());
+  }
+}
+
 async function askPick(ctx: Ctx, index: number, candidates: CustomerRow[], allowNaya: boolean): Promise<void> {
   const entries = await Promise.all(
     candidates.map(async (row) => ({
@@ -666,32 +713,28 @@ async function askPick(ctx: Ctx, index: number, candidates: CustomerRow[], allow
   );
   const payload = planPayload(ctx, "pick", index);
   payload.candidates = candidates;
-  await createPending(ctx.shopId, ctx.senderPhone, "plan", payload, ctx.messageId);
-  log(ctx.messageId, "plan_pick_asked", { count: candidates.length, allowNaya });
-  ctx.setOutcome?.("asked_customer");
-  await sendText(ctx.senderPhone, replyPickCustomerList(entries, allowNaya));
+  await askGuarded(ctx, "pick", "pick_customer", payload, async () => {
+    log(ctx.messageId, "plan_pick_asked", { count: candidates.length, allowNaya });
+    ctx.setOutcome?.("asked_customer");
+    await sendText(ctx.senderPhone, replyPickCustomerList(entries, allowNaya));
+  });
 }
 
 async function askNewLast4(ctx: Ctx, index: number, name: string, last4: string): Promise<void> {
   const payload = planPayload(ctx, "new_last4", index);
   payload.newLast4 = { name, last4 };
-  const pendingId = await createPending(
-    ctx.shopId,
-    ctx.senderPhone,
-    "plan",
-    payload,
-    ctx.messageId,
-  );
-  log(ctx.messageId, "plan_new_last4_asked", { name, last4 });
-  ctx.setOutcome?.("asked_confirm");
-  await sendButtons(
-    ctx.senderPhone,
-    replyNewCustomerConfirm(name, last4),
-    [
-      { id: `confirm:${pendingId}`, title: "Haan, banao" },
-      { id: `cancel:${pendingId}`, title: "Cancel" },
-    ],
-  );
+  await askGuarded(ctx, "new_last4", "confirm_action", payload, async (pendingId) => {
+    log(ctx.messageId, "plan_new_last4_asked", { name, last4 });
+    ctx.setOutcome?.("asked_confirm");
+    await sendButtons(
+      ctx.senderPhone,
+      replyNewCustomerConfirm(name, last4),
+      [
+        { id: `confirm:${pendingId}`, title: "Haan, banao" },
+        { id: `cancel:${pendingId}`, title: "Cancel" },
+      ],
+    );
+  });
 }
 
 async function askNearMatch(ctx: Ctx, index: number, enteredName: string, customer: CustomerRow): Promise<void> {
@@ -703,24 +746,19 @@ async function askNearMatch(ctx: Ctx, index: number, enteredName: string, custom
     customerName: customer.display_name,
     disambiguator: customer.disambiguator,
   };
-  const pendingId = await createPending(
-    ctx.shopId,
-    ctx.senderPhone,
-    "plan",
-    payload,
-    ctx.messageId,
-  );
-  log(ctx.messageId, "plan_near_match_asked", { enteredName, customerId: customer.id });
-  ctx.setOutcome?.("asked_confirm");
-  await sendButtons(
-    ctx.senderPhone,
-    replyNearMatch(enteredName, label),
-    [
-      { id: `confirm:${pendingId}`, title: "Haan" },
-      { id: `new:${pendingId}`, title: "Naya banao" },
-      { id: `cancel:${pendingId}`, title: "Cancel" },
-    ],
-  );
+  await askGuarded(ctx, "near_match", "confirm_action", payload, async (pendingId) => {
+    log(ctx.messageId, "plan_near_match_asked", { enteredName, customerId: customer.id });
+    ctx.setOutcome?.("asked_confirm");
+    await sendButtons(
+      ctx.senderPhone,
+      replyNearMatch(enteredName, label),
+      [
+        { id: `confirm:${pendingId}`, title: "Haan" },
+        { id: `new:${pendingId}`, title: "Naya banao" },
+        { id: `cancel:${pendingId}`, title: "Cancel" },
+      ],
+    );
+  });
 }
 
 function computeForce(ctx: Ctx): boolean {
@@ -750,7 +788,7 @@ function previewLine(entry: PreparedAction, ctx: Ctx): string {
   switch (entry.type) {
     case "order": {
       const who = slot ? slot.label : action.customer_name ?? "bina naam";
-      const items = orderLinesSummary(entry.lines ?? []).join(", ");
+      const items = orderItemsSummary(entry.lines ?? []).join(", ");
       const amountPart =
         (entry.paidPaise ?? 0) > 0 || (entry.discountPaise ?? 0) > 0
           ? replySplitPreview({
@@ -789,28 +827,23 @@ function previewLine(entry: PreparedAction, ctx: Ctx): string {
 async function askPreview(ctx: Ctx, force: boolean): Promise<void> {
   const lines = ctx.prepared.map((entry) => previewLine(entry, ctx));
   const payload = planPayload(ctx, null, -1);
-  const pendingId = await createPending(
-    ctx.shopId,
-    ctx.senderPhone,
-    "plan",
-    payload,
-    ctx.messageId,
-  );
-  log(ctx.messageId, "plan_preview", {
-    actions: ctx.prepared.length,
-    force,
-    voice: ctx.meta.rawInputType === "voice",
+  await askGuarded(ctx, "preview", "confirm_action", payload, async (pendingId) => {
+    log(ctx.messageId, "plan_preview", {
+      actions: ctx.prepared.length,
+      force,
+      voice: ctx.meta.rawInputType === "voice",
+    });
+    ctx.setOutcome?.("asked_confirm");
+    const transcript = ctx.meta.rawInputType === "voice" ? ctx.meta.transcript : null;
+    await sendButtons(
+      ctx.senderPhone,
+      replyPlanPreview({ transcript, lines }),
+      [
+        { id: `confirm:${pendingId}`, title: "Haan, sab save karo" },
+        { id: `cancel:${pendingId}`, title: "Cancel" },
+      ],
+    );
   });
-  ctx.setOutcome?.("asked_confirm");
-  const transcript = ctx.meta.rawInputType === "voice" ? ctx.meta.transcript : null;
-  await sendButtons(
-    ctx.senderPhone,
-    replyPlanPreview({ transcript, lines }),
-    [
-      { id: `confirm:${pendingId}`, title: "Haan, sab save karo" },
-      { id: `cancel:${pendingId}`, title: "Cancel" },
-    ],
-  );
 }
 
 async function executePlan(ctx: Ctx, claimId?: string): Promise<void> {
@@ -857,7 +890,7 @@ async function executePlan(ctx: Ctx, claimId?: string): Promise<void> {
               ? `Naya customer ${slot.customerName}`
               : slot.label
             : "bina naam";
-          let line = `${who}: ${orderLinesSummary(entry.lines ?? []).join(", ")} - ${formatPaise(entry.totalPaise ?? 0)} - ${entry.paymentMethod ?? "cash"}`;
+          let line = `${who}: ${orderItemsSummary(entry.lines ?? []).join(", ")} - ${formatPaise(entry.totalPaise ?? 0)} - ${entry.paymentMethod ?? "cash"}`;
           if ((entry.skipped?.length ?? 0) > 0) {
             line += ` (skip: ${(entry.skipped ?? []).join(", ")})`;
           }
@@ -1062,7 +1095,7 @@ async function resumeAfterAsk(
   nextIndex: number,
 ): Promise<void> {
   await resolvePending(pending.id, "done");
-  await runPlan(buildCtx(payload, params), nextIndex);
+  await runPlan(buildCtx(payload, params), nextIndex, { skipForce: true });
 }
 
 async function applyNearMatchChoice(
@@ -1100,7 +1133,7 @@ async function applyNearMatchChoice(
       params.shopId,
       info.enteredName,
       created.id,
-      "near_match_new",
+      "auto_new",
       params.messageId,
     );
     customer = created;
@@ -1115,7 +1148,7 @@ async function applyNearMatchChoice(
       params.shopId,
       info.enteredName,
       info.customerId,
-      "near_match_confirm",
+      "confirmed_by_shopkeeper",
       params.messageId,
     );
   }
@@ -1233,6 +1266,12 @@ export async function continuePlanPending(params: {
     case "pick": {
       const candidates = payload.candidates ?? [];
       const pick = parsePickReply(params.text, candidates.length);
+      if (pick.type === "bad_length") {
+        log(params.messageId, "plan_pick_bad_length", { text: params.text });
+        params.setOutcome?.("asked_customer");
+        await sendText(params.senderPhone, replyLast4Only());
+        return true;
+      }
       if (pick.type === "none") return false;
       const action = payload.plan.actions[payload.index];
       if (!action) {
@@ -1257,6 +1296,7 @@ export async function continuePlanPending(params: {
           await sendText(params.senderPhone, replyInvalidName());
           return true;
         }
+        await recordIdentityMatch(params.shopId, name, created.id, "auto_new", params.messageId);
         const label = await customerLabel(params.shopId, created, params.messageId);
         payload.resolved[payload.index] = slotFor(created, normalizeNameKey(name), label, {
           justCreated: true,
@@ -1270,8 +1310,26 @@ export async function continuePlanPending(params: {
       if (pick.type === "last4") {
         chosen =
           candidates.find((row) => (row.disambiguator ?? "") === pick.value) ?? null;
+        if (chosen) {
+          await recordIdentityMatch(
+            params.shopId,
+            action.customer_name ?? chosen.display_name,
+            chosen.id,
+            "name_ambiguous_last4_resolved",
+            params.messageId,
+          );
+        }
       } else if (pick.value >= 1 && pick.value <= candidates.length) {
         chosen = candidates[pick.value - 1] ?? null;
+        if (chosen) {
+          await recordIdentityMatch(
+            params.shopId,
+            action.customer_name ?? chosen.display_name,
+            chosen.id,
+            "name_ambiguous_manual_pick",
+            params.messageId,
+          );
+        }
       }
       if (!chosen) {
         log(params.messageId, "plan_pick_no_match", {
@@ -1346,6 +1404,7 @@ export async function handlePlanButtonReply(params: {
   messageId: string;
   buttonReplyId: string;
   setOutcome?: OutcomeSink;
+  onStage?: (stage: string) => void;
 }): Promise<void> {
   const [action, pendingId] = params.buttonReplyId.split(":");
   if (!pendingId) {
@@ -1353,17 +1412,13 @@ export async function handlePlanButtonReply(params: {
     return;
   }
 
+  params.onStage?.("button_pending_lookup");
   const pending = await getPendingById(pendingId);
-  if (!pending || pending.shop_id !== params.shopId || pending.action_type !== "plan") {
+  if (!pending || pending.shop_id !== params.shopId || !isPlanPendingPayload(pending.payload)) {
     await sendText(params.senderPhone, replyPendingExpired());
     return;
   }
   if (pending.status !== "open") {
-    await sendText(params.senderPhone, replyPendingExpired());
-    return;
-  }
-  if (!validPayload(pending.payload)) {
-    await resolvePending(pending.id, "cancelled");
     await sendText(params.senderPhone, replyPendingExpired());
     return;
   }

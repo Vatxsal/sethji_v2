@@ -1,5 +1,6 @@
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
+import { detectCustomerCode } from "./customerCode";
 import {
   ACTION_TYPES,
   emptyAction,
@@ -513,6 +514,35 @@ function actionFromLegacy(intent: ExtractedIntent, type: ActionType): ExtractedA
   };
 }
 
+function applyCustomerCodes(actions: ExtractedAction[], text: string): ExtractedAction[] {
+  const detection = detectCustomerCode(text, "message");
+  if (!detection.code) return actions;
+
+  const bearing = actions.filter((action) => CUSTOMER_BEARING.has(action.type) && action.customer_name);
+  if (detection.leftName) {
+    const key = normalizeNameKey(detection.leftName);
+    let matched = false;
+    const next = actions.map((action) => {
+      if (
+        CUSTOMER_BEARING.has(action.type) &&
+        action.customer_name &&
+        normalizeNameKey(action.customer_name) === key
+      ) {
+        matched = true;
+        return { ...action, customer_last4: detection.code };
+      }
+      return action;
+    });
+    if (matched) return next;
+  }
+  if (bearing.length === 1) {
+    return actions.map((action) =>
+      action === bearing[0] ? { ...action, customer_last4: detection.code } : action,
+    );
+  }
+  return actions;
+}
+
 export function postProcessPlan(
   plan: ExtractedPlan,
   text: string,
@@ -591,6 +621,7 @@ export function postProcessPlan(
     }
 
     actions = mergeOrders(actions);
+    actions = applyCustomerCodes(actions, text);
     intent = actions[0]?.type ?? intent;
   }
 

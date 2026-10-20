@@ -1,9 +1,11 @@
+import { detectCustomerCode } from "./customerCode";
 import { normalizeNumbers } from "./numbers";
 
 export type PickReply =
   | { type: "index"; value: number }
   | { type: "last4"; value: string }
   | { type: "new" }
+  | { type: "bad_length" }
   | { type: "none" };
 
 const PICK_FILLERS = new Set(["number", "no", "wala", "wali", "ji", "bhai", "please"]);
@@ -48,6 +50,10 @@ function stripNoise(text: string): string {
 }
 
 export function parsePickReply(raw: string, candidateCount: number): PickReply {
+  const code = detectCustomerCode(stripNoise(raw), "pick");
+  if (code.badLength) return { type: "bad_length" };
+  if (code.code) return { type: "last4", value: code.code };
+
   const cleaned = stripNoise(normalizeNumbers(raw));
   if (cleaned === "") return { type: "none" };
 

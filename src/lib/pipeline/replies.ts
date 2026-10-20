@@ -17,6 +17,14 @@ export function replyError(): string {
   return "Kuch gadbad ho gayi, dobara bhejein.";
 }
 
+export function replyConfirmSendFailed(): string {
+  return "Confirm nahi bhej paya, dobara bhejein.";
+}
+
+export function replyLast4Only(): string {
+  return "Last 4 digits hi bhejein.";
+}
+
 export function replyUdhaarNeedsCustomer(): string {
   return "Udhaar kiska? Sirf naam bhejein.";
 }

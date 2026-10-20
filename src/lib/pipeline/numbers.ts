@@ -1,15 +1,4 @@
-const DEVANAGARI_DIGITS: Record<string, string> = {
-  "०": "0",
-  "१": "1",
-  "२": "2",
-  "३": "3",
-  "४": "4",
-  "५": "5",
-  "६": "6",
-  "७": "7",
-  "८": "8",
-  "९": "9",
-};
+import { canonicalizeCustomerCodes } from "./customerCode";
 
 const CARDINALS: Record<string, number> = {
   ek: 1,
@@ -168,7 +157,7 @@ function textTok(raw: string): Tok {
 
 export function normalizeNumbers(text: string, catalogNames: string[] = []): string {
   if (!text) return text;
-  const src = text.replace(/[०-९]/g, (digit) => DEVANAGARI_DIGITS[digit] ?? digit);
+  const src = canonicalizeCustomerCodes(text);
   const parts = src.split(/(\s+)/);
 
   const catalogWords = new Set<string>();
@@ -204,6 +193,7 @@ export function normalizeNumbers(text: string, catalogNames: string[] = []): str
         value,
         singleDigit: Number.isInteger(value) && value >= 0 && value <= 9,
         groupable: true,
+        display: core,
       });
       continue;
     }

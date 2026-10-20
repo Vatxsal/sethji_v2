@@ -12,7 +12,7 @@ export type PendingActionRow = {
   expires_at: string;
 };
 
-export type PendingType = "pick_customer" | "confirm_action" | "plan";
+export type PendingType = "pick_customer" | "confirm_action";
 export type PendingStatus = "open" | "done" | "cancelled" | "expired";
 
 export async function createPending(

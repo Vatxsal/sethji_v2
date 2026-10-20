@@ -195,6 +195,14 @@ export function orderLinesSummary(lines: BillableLine[]): string[] {
   return lines.map(orderLineSummary);
 }
 
+export function orderItemLabel(line: BillableLine): string {
+  return `${formatQuantity(line.quantity)} ${line.unit} ${line.itemName.toLowerCase()}`;
+}
+
+export function orderItemsSummary(lines: BillableLine[]): string[] {
+  return lines.map(orderItemLabel);
+}
+
 export async function writeConfirmedOrder(params: {
   shopId: string;
   messageId: string;

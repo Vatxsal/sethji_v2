@@ -176,11 +176,22 @@ export async function createCustomer(
   return data as CustomerRow;
 }
 
+export type MatchType =
+  | "phone_exact"
+  | "name_unique_match"
+  | "name_ambiguous_last4_resolved"
+  | "name_ambiguous_manual_pick"
+  | "auto_new"
+  | "new_with_last4"
+  | "confirmed_by_shopkeeper"
+  | "rejected_new"
+  | "ambiguous_pending";
+
 export async function recordIdentityMatch(
   shopId: string,
   incomingName: string,
   customerId: string,
-  matchType: string,
+  matchType: MatchType,
   msgId?: string,
 ): Promise<void> {
   try {

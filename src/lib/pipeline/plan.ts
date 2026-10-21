@@ -1,4 +1,4 @@
-import { LARGE_AMOUNT_PAISE, STT_CONFIDENCE_THRESHOLD } from "@/config";
+import { confirmMode, LARGE_AMOUNT_PAISE, SMART_AMOUNT_PAISE, STT_CONFIDENCE_THRESHOLD } from "@/config";
 import { formatBalance, formatPaise, rupeesToPaise } from "@/lib/money";
 import { log } from "@/lib/log";
 import { getSupabase } from "@/lib/supabase";
@@ -16,6 +16,8 @@ import {
   type CustomerRow,
 } from "./customers";
 import {
+  correctPlan,
+  extractPlan,
   MAX_PLAN_ACTIONS,
   type ActionType,
   type CatalogItem,
@@ -26,8 +28,10 @@ import {
 } from "./extract";
 import { ALLOWED_UNITS, performAddItem } from "./addItem";
 import { performBill } from "./invoice";
+import { normalizeNumbersDetailed, type NumberConversion } from "./numbers";
 import {
   buildLines,
+  loadCatalog,
   matchCatalogItem,
   orderItemsSummary,
   writeConfirmedOrder,
@@ -39,25 +43,29 @@ import {
   createPending,
   getPendingById,
   resolvePending,
+  updatePendingPayload,
   type PendingActionRow,
   type PendingType,
 } from "./pending";
 import { parsePickReply, parseYesNo } from "./replyParsing";
-import { performUndo } from "./undo";
-import { isBalanceSetCommand, normalizeNameKey } from "./understand";
-import type { OutcomeSink } from "./messageLog";
+import { peekLatestGroup, performUndo, performUndoGroup } from "./undo";
+import { fetchKnownCustomers, isBalanceSetCommand, normalizeNameKey } from "./understand";
+import type { ConfirmResult, OutcomeSink, ParsedMeta } from "./messageLog";
 import {
   formatRupees,
   replyAddItem,
   replyAddItemBadUnit,
   replyAddItemMissing,
   replyAmountInvalid,
+  replyAskCorrection,
   replyBalance,
   replyBalanceNoChange,
   replyCancelled,
   replyCatalogItemLine,
   replyCatalogList,
   replyConfirmSendFailed,
+  replyCorrectionFailed,
+  replyCorrectionsMax,
   replyCustomerNotFound,
   replyEditRequest,
   replyError,
@@ -85,6 +93,8 @@ import {
   replySplitOverTotal,
   replySplitPreview,
   replyUdhaarNeedsCustomer,
+  replyUndoGroupNone,
+  replyUndoDone,
   replyUndoNone,
   replyUnitMismatch,
   replyWholeUnitsOnly,
@@ -118,6 +128,7 @@ export type PlanMeta = {
   confidenceScore: number | null;
   transcript: string | null;
   text: string | null;
+  conversions?: NumberConversion[];
 };
 
 type Slot = {
@@ -159,13 +170,16 @@ export type PlanPayload = {
   plan: ExtractedPlan;
   resolved: Slot[];
   prepared: PreparedAction[];
-  awaiting: null | "pick" | "name" | "near_match" | "new_last4";
+  awaiting: null | "pick" | "name" | "near_match" | "new_last4" | "correction";
   index: number;
   candidates?: CustomerRow[];
   nearMatch?: NearMatchInfo;
   newLast4?: NewLast4Info;
+  corrections?: number;
   meta: PlanMeta;
 };
+
+export type PlanParsedSink = (plan: ExtractedPlan | null, meta?: ParsedMeta) => void;
 
 type Ctx = {
   plan: ExtractedPlan;
@@ -175,7 +189,9 @@ type Ctx = {
   shopId: string;
   senderPhone: string;
   messageId: string;
+  corrections: number;
   setOutcome?: OutcomeSink;
+  setParsed?: PlanParsedSink;
   onStage?: (stage: string) => void;
 };
 
@@ -186,8 +202,10 @@ type AskParams = {
   senderPhone: string;
   messageId: string;
   setOutcome?: OutcomeSink;
-  setParsed?: (plan: ExtractedPlan) => void;
+  setParsed?: PlanParsedSink;
 };
+
+const MAX_CORRECTIONS = 3;
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -277,7 +295,9 @@ function buildCtx(payload: PlanPayload, params: AskParams): Ctx {
     shopId: params.shopId,
     senderPhone: params.senderPhone,
     messageId: params.messageId,
+    corrections: payload.corrections ?? 0,
     setOutcome: params.setOutcome,
+    setParsed: params.setParsed,
   };
 }
 
@@ -307,7 +327,7 @@ export type PlanStartParams = {
   senderPhone: string;
   messageId: string;
   setOutcome?: OutcomeSink;
-  setParsed?: (plan: ExtractedPlan) => void;
+  setParsed?: PlanParsedSink;
   onStage?: (stage: string) => void;
 };
 
@@ -358,7 +378,9 @@ export async function handlePlan(params: PlanStartParams): Promise<void> {
       shopId,
       senderPhone,
       messageId,
+      corrections: 0,
       setOutcome: params.setOutcome,
+      setParsed: params.setParsed,
       onStage: params.onStage,
     },
     0,
@@ -646,17 +668,11 @@ async function runPlan(ctx: Ctx, resumeFrom: number, opts?: { skipForce?: boolea
       preparedAction.mode === "half" ? Math.round(balance / 2) : balance;
   }
 
-  const hasWriting = prepared.some((entry) => WRITING_TYPES.has(entry.type));
-  if (!hasWriting) {
-    await executePlan(ctx);
+  if (!opts?.skipForce && needsConfirm(ctx)) {
+    await askPreview(ctx);
     return;
   }
-  const force = opts?.skipForce ? false : computeForce(ctx);
-  if (prepared.length === 1 && !force) {
-    await executePlan(ctx);
-    return;
-  }
-  await askPreview(ctx, force);
+  await executePlan(ctx);
 }
 
 function planPayload(ctx: Ctx, awaiting: PlanPayload["awaiting"], index: number): PlanPayload {
@@ -667,6 +683,7 @@ function planPayload(ctx: Ctx, awaiting: PlanPayload["awaiting"], index: number)
     prepared: ctx.prepared,
     awaiting,
     index,
+    corrections: ctx.corrections,
     meta: ctx.meta,
   };
 }
@@ -782,64 +799,163 @@ function computeForce(ctx: Ctx): boolean {
   return false;
 }
 
-function previewLine(entry: PreparedAction, ctx: Ctx): string {
-  const action = ctx.plan.actions[entry.index];
-  const slot = ctx.resolved[entry.index];
-  switch (entry.type) {
-    case "order": {
-      const who = slot ? slot.label : action.customer_name ?? "bina naam";
-      const items = orderItemsSummary(entry.lines ?? []).join(", ");
-      const amountPart =
-        (entry.paidPaise ?? 0) > 0 || (entry.discountPaise ?? 0) > 0
+function smartNeedsConfirm(ctx: Ctx): boolean {
+  if (ctx.meta.rawInputType === "voice") return true;
+  for (const entry of ctx.prepared) {
+    const slot = ctx.resolved[entry.index];
+    if (slot && (slot.justCreated || slot.nearMatch)) return true;
+    if (entry.type === "order") {
+      if ((entry.lines ?? []).some((line) => !Number.isInteger(line.quantity))) return true;
+      if (entry.hasValueLine) return true;
+      if ((entry.totalPaise ?? 0) > SMART_AMOUNT_PAISE) return true;
+      if ((entry.paidPaise ?? 0) > 0 || (entry.discountPaise ?? 0) > 0) return true;
+      if ((entry.skipped?.length ?? 0) > 0) return true;
+    }
+    if (entry.type === "payment") {
+      if (entry.mode === "full" || entry.mode === "half") return true;
+      if ((entry.amountPaise ?? 0) > SMART_AMOUNT_PAISE) return true;
+    }
+  }
+  return false;
+}
+
+export function needsConfirm(ctx: Ctx): boolean {
+  const hasWriting = ctx.prepared.some((entry) => WRITING_TYPES.has(entry.type));
+  if (!hasWriting) return false;
+  if (computeForce(ctx)) return true;
+  switch (confirmMode()) {
+    case "always":
+      return true;
+    case "voice_only":
+      return ctx.meta.rawInputType === "voice";
+    case "smart":
+      return smartNeedsConfirm(ctx);
+    default:
+      return true;
+  }
+}
+
+async function buildPreviewLines(ctx: Ctx): Promise<string[]> {
+  const lines: string[] = [];
+  for (const entry of ctx.prepared) {
+    const action = ctx.plan.actions[entry.index];
+    const slot = ctx.resolved[entry.index];
+    switch (entry.type) {
+      case "order": {
+        const who = slot ? slot.label : action.customer_name ?? "bina naam";
+        const items = orderItemsSummary(entry.lines ?? []).join(", ");
+        const isSplit = (entry.paidPaise ?? 0) > 0 || (entry.discountPaise ?? 0) > 0;
+        const amountPart = isSplit
           ? replySplitPreview({
               totalPaise: entry.totalPaise ?? 0,
               discountPaise: entry.discountPaise ?? 0,
               paidPaise: entry.paidPaise ?? 0,
             })
-          : formatPaise(entry.totalPaise ?? 0);
-      let line = `${who}: ${items} - ${amountPart} - ${entry.paymentMethod ?? "cash"}`;
-      if ((entry.skipped?.length ?? 0) > 0) {
-        line += ` (skip: ${(entry.skipped ?? []).join(", ")})`;
+          : `Rs ${formatRupees(entry.totalPaise ?? 0)}`;
+        let line = `${who} - ${items} - ${amountPart} - ${entry.paymentMethod ?? "cash"}`;
+        if ((entry.skipped?.length ?? 0) > 0) {
+          line += ` (skip: ${(entry.skipped ?? []).join(", ")})`;
+        }
+        lines.push(line);
+        if (entry.paymentMethod === "udhaar" && slot) {
+          const prior = await getCustomerBalance(slot.customerId);
+          const after = prior + (entry.totalPaise ?? 0) - (entry.paidPaise ?? 0) - (entry.discountPaise ?? 0);
+          lines.push(`Balance pehle Rs ${formatRupees(prior)}, ab Rs ${formatRupees(after)} hoga.`);
+        }
+        break;
       }
-      return line;
+      case "payment": {
+        const who = slot ? slot.label : action.customer_name ?? "customer";
+        const amount = entry.amountPaise ?? 0;
+        let line = `${who} se Rs ${formatRupees(amount)} mile.`;
+        if (slot) {
+          const prior = await getCustomerBalance(slot.customerId);
+          line += ` Balance pehle Rs ${formatRupees(prior)}, ab Rs ${formatRupees(prior - amount)} hoga.`;
+        }
+        lines.push(line);
+        break;
+      }
+      case "undo": {
+        const who = slot ? slot.label : action.customer_name ?? "customer";
+        const peek = await peekLatestGroup(ctx.shopId, slot ? slot.customerId : null);
+        if (peek) {
+          let line = `Undo: ${who} - last entry - Rs ${formatRupees(Math.abs(peek.netPaise))}.`;
+          if (slot) {
+            const prior = await getCustomerBalance(slot.customerId);
+            line += ` Balance ab Rs ${formatRupees(prior - peek.netPaise)} hoga.`;
+          }
+          lines.push(line);
+        } else {
+          lines.push(`Undo: ${who} - last entry`);
+        }
+        break;
+      }
+      case "add_item": {
+        const item = entry.addItem;
+        lines.push(
+          `Item: ${item?.name ?? ""} - Rs ${formatRupees(rupeesToPaise(item?.price_rupees ?? 0))}/${item?.unit ?? ""}`,
+        );
+        break;
+      }
+      case "balance":
+        lines.push(slot ? `${slot.label}: hisaab dekhna` : "Sabka hisaab dekhna");
+        break;
+      case "bill":
+        lines.push(slot ? `${slot.label}: bill bhejna` : "Latest order ka bill bhejna");
+        break;
+      case "catalog_list":
+        lines.push("Item list dekhna");
+        break;
+      default:
+        lines.push(entry.type);
+        break;
     }
-    case "payment": {
-      const who = slot ? slot.label : action.customer_name ?? "customer";
-      return `${who}: ${formatPaise(entry.amountPaise ?? 0)} mile`;
-    }
-    case "balance":
-      return slot ? `${slot.label}: hisaab dekhna` : "Sabka hisaab dekhna";
-    case "bill":
-      return slot ? `${slot.label}: bill bhejna` : "Latest order ka bill bhejna";
-    case "undo":
-      return slot ? `${slot.label}: last entry hataana` : "Last entry hataana";
-    case "add_item": {
-      const item = entry.addItem;
-      return `Naya item: ${item?.name ?? ""} - Rs ${formatRupees(rupeesToPaise(item?.price_rupees ?? 0))}/${item?.unit ?? ""}`;
-    }
-    case "catalog_list":
-      return "Item list dekhna";
-    default:
-      return entry.type;
   }
+  return lines;
 }
 
-async function askPreview(ctx: Ctx, force: boolean): Promise<void> {
-  const lines = ctx.prepared.map((entry) => previewLine(entry, ctx));
+function conversionLines(ctx: Ctx): string[] {
+  const conversions = ctx.meta.conversions ?? [];
+  const out: string[] = [];
+  for (const conversion of conversions) {
+    let unit: string | null = null;
+    const value = Number(conversion.to);
+    if (Number.isFinite(value)) {
+      for (const entry of ctx.prepared) {
+        if (entry.type !== "order") continue;
+        for (const line of entry.lines ?? []) {
+          if (line.quantity === value) {
+            unit = line.unit;
+            break;
+          }
+        }
+        if (unit) break;
+      }
+    }
+    out.push(unit ? `${conversion.from} ${unit} = ${conversion.to} ${unit}` : `${conversion.from} = ${conversion.to}`);
+  }
+  return out;
+}
+
+async function askPreview(ctx: Ctx): Promise<void> {
+  const previewLines = await buildPreviewLines(ctx);
+  const conversions = conversionLines(ctx);
   const payload = planPayload(ctx, null, -1);
   await askGuarded(ctx, "preview", "confirm_action", payload, async (pendingId) => {
     log(ctx.messageId, "plan_preview", {
       actions: ctx.prepared.length,
-      force,
+      mode: confirmMode(),
       voice: ctx.meta.rawInputType === "voice",
+      corrections: ctx.corrections,
     });
     ctx.setOutcome?.("asked_confirm");
-    const transcript = ctx.meta.rawInputType === "voice" ? ctx.meta.transcript : null;
+    const heard = ctx.meta.rawInputType === "voice" ? ctx.meta.transcript : null;
     await sendButtons(
       ctx.senderPhone,
-      replyPlanPreview({ transcript, lines }),
+      replyPlanPreview({ heard, lines: previewLines, conversions }),
       [
-        { id: `confirm:${pendingId}`, title: "Haan, sab save karo" },
+        { id: `confirm:${pendingId}`, title: "Haan, save karo" },
+        { id: `change:${pendingId}`, title: "Badlo" },
         { id: `cancel:${pendingId}`, title: "Cancel" },
       ],
     );
@@ -847,7 +963,7 @@ async function askPreview(ctx: Ctx, force: boolean): Promise<void> {
 }
 
 async function executePlan(ctx: Ctx, claimId?: string): Promise<void> {
-  const { prepared, resolved, meta, shopId, senderPhone, messageId, setOutcome } = ctx;
+  const { prepared, resolved, meta, shopId, senderPhone, messageId, setOutcome, setParsed } = ctx;
 
   if (claimId) {
     const claimed = await claimPending(claimId, messageId);
@@ -1003,11 +1119,23 @@ async function executePlan(ctx: Ctx, claimId?: string): Promise<void> {
       if (billsSent === 0) await sendText(senderPhone, lines[0]);
     } else if (singleReadOnly) {
       await sendText(senderPhone, lines[0]);
+    } else if (hasWrite && meta.sourceMessageId) {
+      await sendButtons(
+        senderPhone,
+        replyPlanDone({ lines, balances }),
+        [{ id: `undo:${meta.sourceMessageId}`, title: "Undo" }],
+      );
     } else {
       await sendText(senderPhone, replyPlanDone({ lines, balances }));
     }
 
     setOutcome?.(hasWrite || billsSent > 0 ? "saved" : "info");
+    if (hasWrite) {
+      setParsed?.(ctx.plan, {
+        confirmResult: ctx.corrections > 0 ? "changed_then_saved" : "saved_as_is",
+        corrections: ctx.corrections,
+      });
+    }
     log(messageId, "plan_done", {
       actions: prepared.length,
       lines: lines.length,
@@ -1216,7 +1344,70 @@ async function cancelPlanPending(
   }
   log(params.messageId, "plan_cancelled", { pendingId: pending.id });
   params.setOutcome?.("refused");
+  params.setParsed?.(null, {
+    confirmResult: "cancelled",
+    corrections: params.payload.corrections ?? 0,
+  });
   await sendText(params.senderPhone, replyCancelled());
+}
+
+const CHANGE_REQUEST = /^(badlo|badal do|badaldo|change|edit|sudhar do|sahi kar do|theek kar do)\b/;
+
+function isChangeRequest(text: string): boolean {
+  const cleaned = text
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return CHANGE_REQUEST.test(cleaned);
+}
+
+async function enterCorrectionMode(
+  pending: PendingActionRow,
+  payload: PlanPayload,
+  params: AskParams,
+): Promise<void> {
+  payload.awaiting = "correction";
+  await updatePendingPayload(pending.id, payload);
+  log(params.messageId, "plan_badlo", {
+    pendingId: pending.id,
+    corrections: payload.corrections ?? 0,
+  });
+  params.setOutcome?.("asked_confirm");
+  await sendText(params.senderPhone, replyAskCorrection());
+}
+
+function isCompleteNewInstruction(
+  text: string,
+  payload: PlanPayload,
+  catalog: CatalogItem[],
+): boolean {
+  const lower = text.toLowerCase();
+  const names = new Set<string>();
+  for (const slot of payload.resolved) {
+    if (slot) names.add(slot.customerName.toLowerCase());
+  }
+  for (const action of payload.plan.actions) {
+    const name = action.customer_name?.trim().toLowerCase();
+    if (name) names.add(name);
+  }
+  const hasCustomer = [...names].some((name) => name !== "" && lower.includes(name)) || /\b\d{4}\b/.test(text);
+  if (!hasCustomer) return false;
+  const hasQty =
+    /\b\d+(?:\.\d+)?\s*(kilo|kg|kgs|kilogram|gram|gm|litre|liter|ltr|ml|packet|pkt|piece|pc|dozen|किलो|ग्राम|लीटर)\b/i.test(
+      text,
+    );
+  const hasMoney =
+    /\b\d+(?:\.\d+)?\s*(rupaye|rupees|rupya|rs)\b/i.test(text) ||
+    /\b(diye|diya|deta|paid|jama|chuka|chuke)\b/i.test(text);
+  const hasItem = catalog.some((item) =>
+    item.name
+      .toLowerCase()
+      .split(/\s+/)
+      .some((word) => word.length > 2 && lower.includes(word)),
+  );
+  return hasQty || hasMoney || hasItem;
 }
 
 export async function continuePlanPending(params: {
@@ -1226,7 +1417,7 @@ export async function continuePlanPending(params: {
   senderPhone: string;
   messageId: string;
   setOutcome?: OutcomeSink;
-  setParsed?: (plan: ExtractedPlan) => void;
+  setParsed?: PlanParsedSink;
 }): Promise<boolean> {
   const raw = params.pending.payload;
   if (!validPayload(raw)) return false;
@@ -1380,7 +1571,104 @@ export async function continuePlanPending(params: {
       return false;
     }
 
+    case "correction": {
+      const used = payload.corrections ?? 0;
+      if (used >= MAX_CORRECTIONS) {
+        await resolvePending(params.pending.id, "cancelled");
+        log(params.messageId, "plan_corrections_max", { corrections: used });
+        params.setOutcome?.("refused");
+        params.setParsed?.(null, { confirmResult: "cancelled", corrections: used });
+        await sendText(params.senderPhone, replyCorrectionsMax());
+        return true;
+      }
+      const correctionText = params.text.trim();
+      if (!correctionText) return false;
+
+      const catalog = await loadCatalog(params.shopId);
+      const customers = await fetchKnownCustomers(params.shopId);
+      const detailed = normalizeNumbersDetailed(
+        correctionText,
+        catalog.map((item) => item.name),
+      );
+      const complete = isCompleteNewInstruction(detailed.text, payload, catalog);
+
+      let nextPlan: ExtractedPlan | null = null;
+      if (complete) {
+        nextPlan = await extractPlan(detailed.text, catalog, customers, params.messageId);
+      } else {
+        nextPlan = await correctPlan(payload.plan, correctionText, catalog, customers, params.messageId);
+      }
+      if (!nextPlan || nextPlan.actions.length === 0 || nextPlan.actions.length > MAX_PLAN_ACTIONS) {
+        log(params.messageId, "plan_correction_failed", { complete });
+        params.setOutcome?.("not_understood");
+        await sendText(params.senderPhone, replyCorrectionFailed());
+        return true;
+      }
+
+      const oldSlots = new Map<string, NonNullable<Slot>>();
+      for (const slot of payload.resolved) {
+        if (slot) oldSlots.set(slot.nameKey, slot);
+      }
+
+      const prepared: PreparedAction[] = [];
+      for (let i = 0; i < nextPlan.actions.length; i++) {
+        const outcome = await prepareAction({
+          action: nextPlan.actions[i],
+          index: i,
+          plan: nextPlan,
+          meta: payload.meta,
+          catalog,
+          shopId: params.shopId,
+          senderPhone: params.senderPhone,
+          messageId: params.messageId,
+          setOutcome: params.setOutcome,
+        });
+        if ("refused" in outcome) {
+          await resolvePending(params.pending.id, "cancelled");
+          return true;
+        }
+        prepared.push(outcome.prepared);
+      }
+
+      const resolvedSlots: Slot[] = nextPlan.actions.map(() => null);
+      for (let i = 0; i < nextPlan.actions.length; i++) {
+        const name = nextPlan.actions[i].customer_name?.trim() ?? "";
+        if (!name) continue;
+        const cached = oldSlots.get(normalizeNameKey(name));
+        if (cached) resolvedSlots[i] = cached;
+      }
+
+      payload.plan = nextPlan;
+      payload.prepared = prepared;
+      payload.resolved = resolvedSlots;
+      payload.corrections = used + 1;
+      payload.awaiting = null;
+      payload.candidates = undefined;
+      payload.nearMatch = undefined;
+      payload.newLast4 = undefined;
+      payload.meta = {
+        ...payload.meta,
+        text: detailed.text,
+        transcript:
+          payload.meta.rawInputType === "voice" ? correctionText : payload.meta.transcript,
+        conversions: [...(payload.meta.conversions ?? []), ...detailed.conversions],
+      };
+
+      await resolvePending(params.pending.id, "done");
+      log(params.messageId, "plan_corrected", {
+        corrections: payload.corrections,
+        source: complete ? "new_instruction" : "llm",
+      });
+      params.setParsed?.(nextPlan, { corrections: payload.corrections, normalized: detailed.text });
+      await runPlan(buildCtx(payload, ctx), 0);
+      return true;
+    }
+
     case null: {
+      if (isChangeRequest(params.text)) {
+        await enterCorrectionMode(params.pending, payload, ctx);
+        return true;
+      }
       const answer = parseYesNo(params.text);
       if (answer === "no") {
         await cancelPlanPending(params.pending, ctx);
@@ -1404,9 +1692,36 @@ export async function handlePlanButtonReply(params: {
   messageId: string;
   buttonReplyId: string;
   setOutcome?: OutcomeSink;
+  setParsed?: PlanParsedSink;
   onStage?: (stage: string) => void;
 }): Promise<void> {
   const [action, pendingId] = params.buttonReplyId.split(":");
+
+  if (action === "undo") {
+    const groupId = params.buttonReplyId.slice("undo:".length);
+    if (!groupId) {
+      await sendText(params.senderPhone, replyPendingExpired());
+      return;
+    }
+    try {
+      const result = await performUndoGroup(params.shopId, groupId, params.messageId);
+      if (!result) {
+        params.setOutcome?.("refused");
+        await sendText(params.senderPhone, replyUndoGroupNone());
+        return;
+      }
+      log(params.messageId, "plan_undo_button", { groupId, reversed: result.reversed });
+      params.setOutcome?.("saved");
+      params.setParsed?.(null, { confirmResult: "undone_after_save" });
+      await sendText(params.senderPhone, replyUndoDone(result.description, result.balancePaise));
+    } catch (error) {
+      log(params.messageId, "undo_group_failed", { error: String(error) });
+      params.setOutcome?.("error");
+      await sendText(params.senderPhone, replyError());
+    }
+    return;
+  }
+
   if (!pendingId) {
     await sendText(params.senderPhone, replyPendingExpired());
     return;
@@ -1415,10 +1730,12 @@ export async function handlePlanButtonReply(params: {
   params.onStage?.("button_pending_lookup");
   const pending = await getPendingById(pendingId);
   if (!pending || pending.shop_id !== params.shopId || !isPlanPendingPayload(pending.payload)) {
+    params.setParsed?.(null, { confirmResult: "expired" });
     await sendText(params.senderPhone, replyPendingExpired());
     return;
   }
   if (pending.status !== "open") {
+    params.setParsed?.(null, { confirmResult: "expired" });
     await sendText(params.senderPhone, replyPendingExpired());
     return;
   }
@@ -1431,10 +1748,31 @@ export async function handlePlanButtonReply(params: {
     senderPhone: params.senderPhone,
     messageId: params.messageId,
     setOutcome: params.setOutcome,
+    setParsed: params.setParsed,
   };
 
   if (action === "cancel") {
     await cancelPlanPending(pending, ctx);
+    return;
+  }
+
+  if (action === "change") {
+    if (payload.awaiting === null || payload.awaiting === "correction") {
+      await enterCorrectionMode(pending, payload, ctx);
+      return;
+    }
+    params.setParsed?.(null, { confirmResult: "expired" });
+    await sendText(params.senderPhone, replyPendingExpired());
+    return;
+  }
+
+  if (payload.awaiting === "correction") {
+    if (action === "confirm") {
+      await sendText(params.senderPhone, replyAskCorrection());
+      return;
+    }
+    params.setParsed?.(null, { confirmResult: "expired" });
+    await sendText(params.senderPhone, replyPendingExpired());
     return;
   }
 
@@ -1444,6 +1782,7 @@ export async function handlePlanButtonReply(params: {
       await executePlan(buildCtx(payload, ctx), pending.id);
       return;
     }
+    params.setParsed?.(null, { confirmResult: "expired" });
     await sendText(params.senderPhone, replyPendingExpired());
     return;
   }

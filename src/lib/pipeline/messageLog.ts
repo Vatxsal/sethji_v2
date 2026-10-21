@@ -14,6 +14,19 @@ export type Outcome =
 
 export type MessageInputType = "text" | "voice" | "interactive" | "other";
 
+export type ConfirmResult =
+  | "saved_as_is"
+  | "changed_then_saved"
+  | "cancelled"
+  | "expired"
+  | "undone_after_save";
+
+export type ParsedMeta = {
+  confirmResult?: ConfirmResult;
+  corrections?: number;
+  normalized?: string | null;
+};
+
 export type OutcomeSink = (outcome: Outcome) => void;
 
 export type MessageLogState = {
@@ -25,6 +38,9 @@ export type MessageLogState = {
   parsed: unknown;
   outcome: Outcome;
   errorText: string | null;
+  confirmResult: ConfirmResult | null;
+  corrections: number;
+  normalizedText: string | null;
 };
 
 const MAX_INPUT_CHARS = 1000;
@@ -53,6 +69,9 @@ export function createMessageLogState(message: IncomingMessage): MessageLogState
     parsed: null,
     outcome: "not_understood",
     errorText: null,
+    confirmResult: null,
+    corrections: 0,
+    normalizedText: null,
   };
 }
 
@@ -74,13 +93,27 @@ export function truncateInputText(text: string | null): string | null {
 
 export async function logMessage(state: MessageLogState): Promise<void> {
   try {
+    const base =
+      state.parsed !== null && typeof state.parsed === "object" && !Array.isArray(state.parsed)
+        ? (state.parsed as Record<string, unknown>)
+        : null;
+    const parsed =
+      base === null && state.confirmResult === null && state.normalizedText === null
+        ? state.parsed
+        : {
+            ...base,
+            confirm_result: state.confirmResult,
+            corrections: state.corrections,
+            heard: state.inputText,
+            normalized: state.normalizedText,
+          };
     const { error } = await getSupabase().from("message_log").insert({
       shop_id: state.shopId,
       whatsapp_message_id: state.whatsappMessageId,
       input_type: state.inputType,
       input_text: truncateInputText(state.inputText),
       stt_confidence: state.sttConfidence,
-      parsed: state.parsed,
+      parsed,
       outcome: state.outcome,
       error_text: state.errorText,
     });

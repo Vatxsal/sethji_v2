@@ -88,6 +88,15 @@ export async function resolvePending(id: string, status: PendingStatus): Promise
   log(id, "pending_resolved", { status });
 }
 
+export async function updatePendingPayload(id: string, payload: unknown): Promise<void> {
+  const { error } = await getSupabase()
+    .from("pending_actions")
+    .update({ payload })
+    .eq("id", id);
+  if (error) throw error;
+  log(id, "pending_payload_updated", {});
+}
+
 export async function claimPending(id: string, msgId?: string): Promise<PendingActionRow | null> {
   const { data, error } = await getSupabase()
     .from("pending_actions")

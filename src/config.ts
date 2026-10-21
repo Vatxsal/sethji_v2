@@ -8,6 +8,19 @@ export const STALE_MESSAGE_SECONDS = 600;
 export const LARGE_AMOUNT_PAISE = 500000;
 export const SUPPORT_TEXT = "Sethji se judne ke liye humse sampark karein.";
 
+export type ConfirmMode = "always" | "voice_only" | "smart";
+
+export const CONFIRM_MODE: ConfirmMode = "always";
+
+const CONFIRM_MODES: readonly string[] = ["always", "voice_only", "smart"];
+
+export function confirmMode(): ConfirmMode {
+  const raw = process.env.CONFIRM_MODE;
+  return raw !== undefined && CONFIRM_MODES.includes(raw) ? (raw as ConfirmMode) : CONFIRM_MODE;
+}
+
+export const SMART_AMOUNT_PAISE = 50000;
+
 export const ENV_KEY_NAMES = [
   "WHATSAPP_PHONE_NUMBER_ID",
   "WHATSAPP_BUSINESS_ACCOUNT_ID",

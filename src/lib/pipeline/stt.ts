@@ -45,7 +45,8 @@ export async function transcribeVoice(buffer: Buffer, msgId: string): Promise<St
     language: STT_LANGUAGE,
     response_format: "verbose_json",
     temperature: 0,
-    prompt: "Rahul ko 2 kilo atta, 1 chai patti, udhaar. Hinglish Roman script mein.",
+    prompt:
+      "Rahul ko 2 kilo atta, 1 chai patti, udhaar. Hinglish Roman script mein. Fractions in Roman letters: paune do kilo, sawa kilo, saadhe teen kilo, dedh kilo, dhai kilo.",
   })) as unknown as VerboseTranscription;
 
   const transcript = (response.text ?? "").trim();

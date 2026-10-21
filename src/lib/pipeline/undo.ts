@@ -153,3 +153,152 @@ export async function performUndo(
 
   return { description: what, customerId, balancePaise };
 }
+
+export async function peekLatestGroup(
+  shopId: string,
+  scopeCustomerId: string | null,
+): Promise<{ netPaise: number; count: number; customerId: string | null } | null> {
+  const sb = getSupabase();
+
+  let query = sb
+    .from("ledger_entries")
+    .select("id, customer_id, order_id, entry_type, amount_paise, notes")
+    .eq("shop_id", shopId)
+    .in("entry_type", UNDO_ENTRY_TYPES)
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (scopeCustomerId) query = query.eq("customer_id", scopeCustomerId);
+  const { data: candidates, error: candidateError } = await query;
+  if (candidateError) throw candidateError;
+
+  const { data: reversalRows, error: reversalError } = await sb
+    .from("ledger_entries")
+    .select("notes")
+    .eq("shop_id", shopId)
+    .eq("entry_type", "manual_adjustment");
+  if (reversalError) throw reversalError;
+
+  const reversedIds = new Set<string>();
+  for (const row of (reversalRows ?? []) as Array<{ notes: string | null }>) {
+    const id = reversalId(row.notes);
+    if (id) reversedIds.add(id);
+  }
+
+  const unreversed = ((candidates ?? []) as LedgerRow[]).filter((row) => !reversedIds.has(row.id));
+  if (unreversed.length === 0) return null;
+
+  const targetKey = groupKey(unreversed[0]);
+  const group = unreversed.filter((row) => groupKey(row) === targetKey);
+  const netPaise = group.reduce((sum, row) => sum + Number(row.amount_paise), 0);
+  const customerId = group.find((row) => row.customer_id)?.customer_id ?? null;
+  return { netPaise, count: group.length, customerId };
+}
+
+export async function performUndoGroup(
+  shopId: string,
+  groupId: string,
+  msgId?: string,
+): Promise<{ description: string; customerId: string | null; balancePaise: number; reversed: number } | null> {
+  const sb = getSupabase();
+
+  const { data: rows, error } = await sb
+    .from("ledger_entries")
+    .select("id, customer_id, order_id, entry_type, amount_paise, notes")
+    .eq("shop_id", shopId)
+    .eq("notes", `grp:${groupId}`)
+    .in("entry_type", UNDO_ENTRY_TYPES);
+  if (error) throw error;
+  const group = (rows ?? []) as LedgerRow[];
+  if (group.length === 0) {
+    log(msgId, "undo_group_none", { groupId });
+    return null;
+  }
+
+  const { data: reversalRows, error: reversalError } = await sb
+    .from("ledger_entries")
+    .select("notes")
+    .eq("shop_id", shopId)
+    .eq("entry_type", "manual_adjustment");
+  if (reversalError) throw reversalError;
+
+  const reversedIds = new Set<string>();
+  for (const row of (reversalRows ?? []) as Array<{ notes: string | null }>) {
+    const id = reversalId(row.notes);
+    if (id) reversedIds.add(id);
+  }
+
+  const unreversed = group.filter((row) => !reversedIds.has(row.id));
+  if (unreversed.length === 0) {
+    log(msgId, "undo_group_already_reversed", { groupId });
+    return null;
+  }
+
+  for (const member of unreversed) {
+    const { error: reversalEntryError } = await sb.rpc("add_ledger_entry", {
+      p_shop_id: shopId,
+      p_customer_id: member.customer_id,
+      p_order_id: member.order_id,
+      p_entry_type: "manual_adjustment",
+      p_amount_paise: -Number(member.amount_paise),
+      p_actor_type: "system",
+      p_actor_user_id: null,
+      p_requires_approval: false,
+      p_notes: `reversal_of:${member.id}`,
+    });
+    if (reversalEntryError) throw reversalEntryError;
+  }
+
+  const orderIds = new Set<string>();
+  for (const member of unreversed) {
+    if (member.order_id) orderIds.add(String(member.order_id));
+  }
+  for (const orderId of orderIds) {
+    const { error: voidError } = await sb
+      .from("orders")
+      .update({ status: "voided" })
+      .eq("id", orderId);
+    if (voidError) throw voidError;
+  }
+
+  const customerId = unreversed.find((member) => member.customer_id)?.customer_id ?? null;
+
+  let customerName = "customer";
+  if (customerId) {
+    const { data: customer, error: customerError } = await sb
+      .from("customers")
+      .select("display_name")
+      .eq("id", customerId)
+      .maybeSingle();
+    if (customerError) throw customerError;
+    if (customer) customerName = String(customer.display_name);
+  }
+
+  let balancePaise = 0;
+  if (customerId) balancePaise = await getCustomerBalance(customerId);
+
+  let what: string;
+  if (unreversed.length === 1) {
+    const member = unreversed[0];
+    const noun = entryNoun(member.entry_type) ?? "entry";
+    what = `${customerName} ka ${noun} ${formatPaise(Math.abs(Number(member.amount_paise)))}`;
+  } else {
+    const totals = groupTotals(unreversed);
+    const parts: string[] = [];
+    const udhaarSum = totals.get("udhaar order") ?? 0;
+    const paymentSum = totals.get("payment") ?? 0;
+    const waiverSum = totals.get("chhoot") ?? 0;
+    if (udhaarSum > 0) parts.push(`udhaar order ${formatPaise(udhaarSum)}`);
+    if (paymentSum > 0) parts.push(`payment ${formatPaise(paymentSum)}`);
+    if (waiverSum > 0) parts.push(`chhoot ${formatPaise(waiverSum)}`);
+    what = parts.length > 0 ? `${customerName}: ${parts.join(", ")}` : customerName;
+  }
+
+  log(msgId, "undo_group_done", {
+    groupId,
+    entryIds: unreversed.map((member) => member.id),
+    groupSize: unreversed.length,
+    orderIds: [...orderIds],
+  });
+
+  return { description: what, customerId, balancePaise, reversed: unreversed.length };
+}

@@ -7,7 +7,7 @@ import type { IncomingMessage } from "@/lib/whatsapp/parse";
 import { markRead, sendText } from "@/lib/whatsapp/send";
 import { detectCustomerCode } from "./customerCode";
 import { dispatchPlan } from "./dispatch";
-import { extractPlan, type ExtractedPlan } from "./extract";
+import { extractPlan } from "./extract";
 import {
   createMessageLogState,
   errorTextOf,
@@ -17,11 +17,12 @@ import {
 } from "./messageLog";
 import { getOpenPending, resolvePending } from "./pending";
 import { loadCatalog } from "./order";
-import { normalizeNumbers } from "./numbers";
+import { normalizeNumbersDetailed } from "./numbers";
 import {
   continuePlanPending,
   handlePlanButtonReply,
   isPlanPendingPayload,
+  type PlanParsedSink,
 } from "./plan";
 import { saveVoiceNote, transcribeVoice } from "./stt";
 import { fetchKnownCustomers, hasBusinessSignal } from "./understand";
@@ -97,8 +98,11 @@ async function handleInboundText(
   const setOutcome: OutcomeSink = (outcome) => {
     state.outcome = outcome;
   };
-  const setParsed = (plan: ExtractedPlan): void => {
-    state.parsed = plan;
+  const setParsed: PlanParsedSink = (plan, meta) => {
+    if (plan) state.parsed = plan;
+    if (meta?.confirmResult) state.confirmResult = meta.confirmResult;
+    if (meta?.corrections !== undefined) state.corrections = meta.corrections;
+    if (meta?.normalized !== undefined) state.normalizedText = meta.normalized;
   };
   state.sttConfidence = opts.confidenceScore;
 
@@ -142,10 +146,12 @@ async function handleInboundText(
   const catalog = await loadCatalog(shopId);
   const customers = await fetchKnownCustomers(shopId);
   setStage("normalize");
-  const normalized = normalizeNumbers(
+  const detailed = normalizeNumbersDetailed(
     text,
     catalog.map((item) => item.name),
   );
+  const normalized = detailed.text;
+  state.normalizedText = normalized;
   log(message.id, "normalized", { before: text, after: normalized });
 
   const code = detectCustomerCode(normalized, "message");
@@ -192,6 +198,7 @@ async function handleInboundText(
       confidenceScore: opts.confidenceScore,
       transcript: opts.rawInputType === "voice" ? text : null,
       text: normalized,
+      conversions: detailed.conversions,
     },
     shopId,
     senderPhone,
@@ -288,6 +295,12 @@ export async function handleMessage(message: IncomingMessage): Promise<void> {
         messageId: message.id,
         buttonReplyId: message.buttonReplyId,
         setOutcome,
+        setParsed: (plan, meta) => {
+          if (plan) state.parsed = plan;
+          if (meta?.confirmResult) state.confirmResult = meta.confirmResult;
+          if (meta?.corrections !== undefined) state.corrections = meta.corrections;
+          if (meta?.normalized !== undefined) state.normalizedText = meta.normalized;
+        },
         onStage: setStage,
       });
       await markProcessedDone(message.id, shopId);

@@ -261,11 +261,32 @@ export function replyPlanTooManyActions(): string {
   return "Ek message me 5 se zyada kaam nahi le sakta. Thoda alag alag bhejein.";
 }
 
-export function replyPlanPreview(input: { transcript: string | null; lines: string[] }): string {
+export function replyPlanPreview(input: {
+  heard: string | null;
+  lines: string[];
+  conversions?: string[];
+}): string {
   const out: string[] = [];
-  if (input.transcript) out.push(`Maine suna: "${input.transcript}"`);
-  input.lines.forEach((line, index) => out.push(`${index + 1}) ${line}`));
+  if (input.heard) out.push(`Maine suna: "${input.heard}"`);
+  out.push(...input.lines);
+  if (input.conversions && input.conversions.length > 0) out.push(...input.conversions);
   return out.join("\n");
+}
+
+export function replyAskCorrection(): string {
+  return "Kya badalna hai? Bol ke ya likh ke bataiye, jaise: 'quantity 3 kilo' ya 'customer Rahul'. Ya poora order dobara bhejein.";
+}
+
+export function replyCorrectionsMax(): string {
+  return "Bahut baar badla, dobara shuru karein.";
+}
+
+export function replyCorrectionFailed(): string {
+  return "Sahi nahi kar paya, poora order dobara bhejein.";
+}
+
+export function replyUndoGroupNone(): string {
+  return "Is group me abhi kuch undo nahi hai.";
 }
 
 export function replyPlanDone(input: { lines: string[]; balances: string[] }): string {

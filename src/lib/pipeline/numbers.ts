@@ -29,6 +29,7 @@ const CARDINALS: Record<string, number> = {
   assi: 80,
   nabbe: 90,
   sau: 100,
+  "सौ": 100,
   hazaar: 1000,
   hazar: 1000,
   one: 1,
@@ -46,15 +47,43 @@ const CARDINALS: Record<string, number> = {
 const FRACTIONS: Record<string, number> = {
   aadha: 0.5,
   adha: 0.5,
+  aadhaa: 0.5,
+  "आधा": 0.5,
   half: 0.5,
   paav: 0.25,
   pav: 0.25,
+  "पाव": 0.25,
   quarter: 0.25,
   dedh: 1.5,
+  derh: 1.5,
+  "डेढ़": 1.5,
+  "डेढ": 1.5,
   dhai: 2.5,
+  dhaai: 2.5,
+  "ढाई": 2.5,
 };
 
-const MODIFIERS = new Set(["paune", "saadhe", "sawa"]);
+type ModifierKind = "paune" | "saadhe" | "sawa";
+
+const MODIFIER_KINDS: Record<string, ModifierKind> = {
+  paune: "paune",
+  pone: "paune",
+  poune: "paune",
+  paun: "paune",
+  paunay: "paune",
+  "पौने": "paune",
+  "पौन": "paune",
+  saadhe: "saadhe",
+  saade: "saadhe",
+  sadhe: "saadhe",
+  "साढ़े": "saadhe",
+  "साढे": "saadhe",
+  sawa: "sawa",
+  sava: "sawa",
+  "सवा": "sawa",
+};
+
+const MODIFIERS = new Set(Object.keys(MODIFIER_KINDS));
 
 const QTY_CONTEXT = new Set([
   "kilo",
@@ -126,7 +155,7 @@ type Tok = {
 };
 
 function parseCore(token: string): { pre: string; core: string; post: string } | null {
-  const m = token.match(/^([^\p{L}\p{N}]*)([\p{L}\p{N}]+)([^\p{L}\p{N}]*)$/u);
+  const m = token.match(/^([^\p{L}\p{N}]*)([\p{L}\p{N}\p{M}]+)([^\p{L}\p{N}\p{M}]*)$/u);
   if (!m) return null;
   return { pre: m[1], core: m[2], post: m[3] };
 }
@@ -155,8 +184,13 @@ function textTok(raw: string): Tok {
   };
 }
 
-export function normalizeNumbers(text: string, catalogNames: string[] = []): string {
-  if (!text) return text;
+export type NumberConversion = { from: string; to: string };
+
+type NormalizeResult = { text: string; conversions: NumberConversion[] };
+
+function normalizeNumbersInternal(text: string, catalogNames: string[] = []): NormalizeResult {
+  if (!text) return { text, conversions: [] };
+  const conversions: NumberConversion[] = [];
   const src = canonicalizeCustomerCodes(text);
   const parts = src.split(/(\s+)/);
 
@@ -202,10 +236,12 @@ export function normalizeNumbers(text: string, catalogNames: string[] = []): str
       continue;
     }
     if (FRACTIONS[lower] !== undefined) {
+      const value = FRACTIONS[lower];
+      conversions.push({ from: core, to: formatNumber(value) });
       tokens.push({
         ...base,
         kind: "num",
-        value: FRACTIONS[lower],
+        value,
         singleDigit: false,
         groupable: true,
       });
@@ -240,27 +276,30 @@ export function normalizeNumbers(text: string, catalogNames: string[] = []): str
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
     if (tok.kind !== "text") continue;
-    const lower = tok.core.toLowerCase();
-    if (MODIFIERS.has(lower)) {
+    const kind = MODIFIER_KINDS[tok.core.toLowerCase()];
+    if (kind) {
       const next = tokens[i + 1];
       const nextNum =
         next && !next.consumed && next.kind === "num" && next.groupable && Number.isFinite(next.value)
           ? next
           : null;
-      if (lower === "paune") {
-        tok.kind = "num";
-        tok.value = nextNum ? nextNum.value - 0.25 : 0.75;
-      } else if (lower === "saadhe") {
-        tok.kind = "num";
-        tok.value = nextNum ? nextNum.value + 0.5 : 1.5;
+      if (nextNum) {
+        const base = nextNum.value;
+        const scaled = base >= 100;
+        if (kind === "paune") tok.value = scaled ? base - base / 4 : base - 0.25;
+        else if (kind === "saadhe") tok.value = scaled ? base + base / 2 : base + 0.5;
+        else tok.value = scaled ? base + base / 4 : base + 0.25;
       } else {
-        tok.kind = "num";
-        tok.value = nextNum ? nextNum.value + 0.25 : 1.25;
+        tok.value = kind === "paune" ? 0.75 : kind === "saadhe" ? 1.5 : 1.25;
       }
+      tok.kind = "num";
+      tok.singleDigit = false;
+      const from = nextNum ? `${tok.core} ${nextNum.core}` : tok.core;
+      conversions.push({ from, to: formatNumber(tok.value) });
       if (nextNum) nextNum.consumed = true;
       continue;
     }
-    if (lower === "double") {
+    if (tok.core.toLowerCase() === "double") {
       const next = tokens[i + 1];
       if (next && !next.consumed && next.kind === "num" && next.singleDigit) {
         const digit = String(next.value);
@@ -322,7 +361,21 @@ export function normalizeNumbers(text: string, catalogNames: string[] = []): str
     if (sep !== undefined && piece !== null) out += sep;
   }
 
-  return out
-    .replace(/(\d)[.!?]+$/u, "$1")
-    .trim();
+  return {
+    text: out
+      .replace(/(\d)[.!?]+$/u, "$1")
+      .trim(),
+    conversions,
+  };
+}
+
+export function normalizeNumbers(text: string, catalogNames: string[] = []): string {
+  return normalizeNumbersInternal(text, catalogNames).text;
+}
+
+export function normalizeNumbersDetailed(
+  text: string,
+  catalogNames: string[] = [],
+): NormalizeResult {
+  return normalizeNumbersInternal(text, catalogNames);
 }

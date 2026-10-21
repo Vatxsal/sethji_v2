@@ -473,3 +473,56 @@ export async function extractPlan(
 
   return postProcessPlan(emptyPlan(), text, catalog, customers, msgId);
 }
+
+function buildCorrectionPrompt(): string {
+  return [
+    "You are a correction engine for Sethji, a kirana shop WhatsApp bot.",
+    "You receive the CURRENT plan as one JSON object, then a short correction message from the shopkeeper.",
+    "Return ONLY the corrected plan JSON, same shape and same keys as the input plan.",
+    "Change ONLY what the correction mentions; keep everything else identical.",
+    "If the correction mentions a quantity, change only that item's quantity (and unit if stated).",
+    "If it mentions a customer, change only customer_name/customer_last4.",
+    "If it mentions a payment amount, change only amount_rupees.",
+    "Do not add or remove actions unless the correction clearly adds or removes work.",
+    "Output valid JSON only, no explanations.",
+  ].join("\n");
+}
+
+export async function correctPlan(
+  plan: ExtractedPlan,
+  correction: string,
+  catalog: CatalogItem[],
+  customers: string[],
+  msgId?: string,
+): Promise<ExtractedPlan | null> {
+  const systemPrompt = buildCorrectionPrompt();
+  const userContent = `Current plan:\n${JSON.stringify(plan)}\n\nCorrection:\n${correction}`;
+
+  try {
+    const raw = await groqExtract(systemPrompt, userContent);
+    const parsed = parsePlanJson(raw);
+    if (parsed) {
+      const result = postProcessPlan(parsed, correction, catalog, customers, msgId);
+      log(msgId, "correct_plan", { source: "groq", actions: result.actions.length });
+      return result;
+    }
+    log(msgId, "correct_plan_fail", { source: "groq", raw: raw.slice(0, 500) });
+  } catch (error) {
+    log(msgId, "correct_plan_groq", { error });
+  }
+
+  try {
+    const raw = await geminiExtract(systemPrompt, userContent);
+    const parsed = parsePlanJson(raw);
+    if (parsed) {
+      const result = postProcessPlan(parsed, correction, catalog, customers, msgId);
+      log(msgId, "correct_plan", { source: "gemini", actions: result.actions.length });
+      return result;
+    }
+    log(msgId, "correct_plan_fail", { source: "gemini", raw: raw.slice(0, 500) });
+  } catch (error) {
+    log(msgId, "correct_plan_gemini", { error });
+  }
+
+  return null;
+}

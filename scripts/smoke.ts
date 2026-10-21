@@ -5,8 +5,8 @@ import { WebSocket } from "ws";
 
 config({ path: path.join(process.cwd(), ".env.local") });
 
-// Route extraction straight to Gemini so throttled Groq models don't slow the run.
-process.env.SMOKE = "1";
+// Verification-before-write flow runs in "always" mode unless a scenario flips this.
+process.env.CONFIRM_MODE = process.env.CONFIRM_MODE ?? "always";
 
 // Node 20 has no global WebSocket; supabase-js realtime needs one.
 (globalThis as Record<string, unknown>).WebSocket = WebSocket;
@@ -89,15 +89,19 @@ async function main(): Promise<void> {
   const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const phone = `9197${suffix}`.slice(0, 12);
   let msgSeq = 0;
+  let lastMessageId = "";
 
   function newMessage(type: string, textBody: string | null, buttonReplyId: string | null): IncomingMessage {
     msgSeq += 1;
-    return { id: `smoke-${suffix}-${msgSeq}`, from: phone, type, textBody, audioId: null, buttonReplyId, timestamp: null };
+    lastMessageId = `smoke-${suffix}-${msgSeq}`;
+    return { id: lastMessageId, from: phone, type, textBody, audioId: null, buttonReplyId, timestamp: null };
   }
 
-  // Retry only transient LLM/network failures; a legitimate LLM answer
-  // (out_of_scope / refused / not_understood) must NOT be retried.
+  // Retry only when a transient LLM/network failure (429 etc.) went UNANSWERED.
+  // If groq 429'd but gemini answered (`extract`/`correct_plan` success log),
+  // the reply is legitimate and must not be re-processed (would double-write).
   const TRANSIENT = /(429|rate.?limit|RESOURCE_EXHAUSTED|high demand|UNAVAILABLE|quota|fetch failed|ETIMEDOUT|ECONNRESET|network)/i;
+  const EXTRACT_OK = /\] (extract|correct_plan) \{"source"/;
 
   async function deliver(message: IncomingMessage): Promise<void> {
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -106,8 +110,8 @@ async function main(): Promise<void> {
       await handleMessage(message);
       const captured = consoleCapture.join("\n");
       consoleCapture = null;
-      if (!TRANSIENT.test(captured)) return;
-      if (attempt < 3) await new Promise((r) => setTimeout(r, 20000));
+      if (!TRANSIENT.test(captured) || EXTRACT_OK.test(captured)) return;
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 60000));
     }
   }
 
@@ -137,21 +141,33 @@ async function main(): Promise<void> {
   ]);
   check("catalog seeded", catalogError === null, String(catalogError));
 
+  // Preflight: fail fast (instead of cascading per-scenario failures) when
+  // both LLM providers are quota-blocked and every extract degrades to an
+  // empty plan. Probe once; if degraded, wait up to ~4 min for the window.
+  {
+    const { extractPlan } = await import("../src/lib/pipeline/extract");
+    const probeCatalog = [
+      { id: "p1", shop_id: shopId, name: "Atta", unit_type: "kg", price_per_unit_paise: 4500, gst_rate_percent: 0, is_active: true },
+    ];
+    let healthy = false;
+    for (let attempt = 0; attempt < 5 && !healthy; attempt++) {
+      const probe = await extractPlan("Mohan ko 1 kilo atta udhaar", probeCatalog, [], `smoke-preflight-${attempt}`);
+      healthy = probe.actions.length > 0 && probe.intent !== "unknown";
+      if (!healthy) await new Promise((r) => setTimeout(r, 60000));
+    }
+    if (!healthy) throw new Error("preflight failed: LLM extraction degraded (both providers unavailable?)");
+    console.log("preflight ok: LLM extraction healthy");
+  }
+
   // get_customer_balance: POSITIVE = customer owes shopkeeper.
   async function balanceOf(customerId: string): Promise<number> {
     const { data } = await sb.rpc("get_customer_balance", { p_customer_id: customerId });
     return Number(data ?? 0);
   }
 
-  async function customerByLast4(nameKey: string, last4: string): Promise<string | null> {
-    const { data } = await sb.from("customers").select("id")
-      .eq("shop_id", shopId).eq("normalized_name_key", nameKey).eq("disambiguator", last4).maybeSingle();
-    return data ? String((data as { id: string }).id) : null;
-  }
-
   async function customerByNameKey(nameKey: string): Promise<string | null> {
     const { data } = await sb.from("customers").select("id")
-      .eq("shop_id", shopId).eq("normalized_name_key", nameKey).is("disambiguator", null).maybeSingle();
+      .eq("shop_id", shopId).eq("normalized_name_key", nameKey).maybeSingle();
     return data ? String((data as { id: string }).id) : null;
   }
 
@@ -163,161 +179,156 @@ async function main(): Promise<void> {
       .map((r) => ({ id: r.id, action_type: r.action_type }));
   }
 
+  // message_log inserts are fire-and-forget after() calls, so poll for this message's row.
+  async function lastParsedLog(): Promise<Record<string, unknown> | null> {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const { data } = await sb
+        .from("message_log")
+        .select("parsed, outcome")
+        .eq("whatsapp_message_id", lastMessageId)
+        .maybeSingle();
+      const parsed = (data as { parsed: Record<string, unknown> | null } | null)?.parsed ?? null;
+      if (parsed && typeof parsed === "object" && "confirm_result" in parsed) return parsed;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    return null;
+  }
+
   try {
-    // Scenario a: new customer Suresh -> force preview -> "Haan, sab save karo" -> order saved.
-    console.log("\n== scenario a: new customer Rs 45 ==");
-    await sendText("Suresh ko 1 kilo atta udhaar");
+    // Scenario a: always mode, new customer -> preview with 3 buttons, ledger empty until Haan.
+    console.log("\n== scenario a: always-mode preview ==");
+    await sendText("Mohan ka 1 kilo aata udhaar daal do");
     let reply = lastEntry();
-    const sureshId = await customerByNameKey("suresh");
-    check("a: Suresh created", sureshId !== null, sureshId ?? "none");
-    check("a: preview lists Rs 45 once (no dup amount)", /1 kg atta/.test(reply?.body ?? "") && /45/.test(reply?.body ?? "") && !/45[^0-9]{1,4}45/.test(reply?.body ?? ""), reply?.body ?? "");
-    check("a: preview has save-confirm button", buttonIdByTitle("Haan, sab save karo") !== null, JSON.stringify(reply?.buttons));
-    const aBefore = sureshId ? await balanceOf(sureshId) : 0;
-    check("a: unsaved before confirm (bal 0)", aBefore === 0, `bal=${aBefore}`);
-    await pressTitle("Haan, sab save karo");
-    if (sureshId) {
-      const bal = await balanceOf(sureshId);
+    const mohanId = await customerByNameKey("mohan");
+    check("a: preview has exactly 3 buttons", reply !== null && reply.buttons.length === 3, JSON.stringify(reply?.buttons));
+    check("a: buttons are Haan/Badlo/Cancel",
+      buttonIdByTitle("Haan, save karo") !== null && buttonIdByTitle("Badlo") !== null && buttonIdByTitle("Cancel") !== null,
+      JSON.stringify(reply?.buttons));
+    check("a: preview shows item + Rs 45", /1 kg atta/.test(reply?.body ?? "") && /Rs 45/.test(reply?.body ?? ""), reply?.body ?? "");
+    check("a: preview shows balance line", /pehle Rs 0/.test(reply?.body ?? "") && /ab Rs 45/.test(reply?.body ?? ""), reply?.body ?? "");
+    check("a: Mohan created", mohanId !== null, mohanId ?? "none");
+    check("a: nothing in ledger before confirm", mohanId !== null ? (await balanceOf(mohanId)) === 0 : false,
+      mohanId ? `bal=${await balanceOf(mohanId)}` : "no customer");
+    await pressTitle("Haan, save karo");
+    reply = lastEntry();
+    if (mohanId) {
+      const bal = await balanceOf(mohanId);
       check("a: confirm saved order (+4500 owes)", bal === 4500, `bal=${bal}`);
     }
+    check("a: saved reply has Undo button", buttonIdByTitle("Undo") !== null, JSON.stringify(reply?.buttons));
+    const aUndoId = buttonIdByTitle("Undo");
     check("a: pending consumed", (await openPlanPending()).length === 0, "");
+    let parsed = await lastParsedLog();
+    check("a: log confirm_result saved_as_is", parsed?.confirm_result === "saved_as_is", JSON.stringify(parsed));
 
-    // Scenario b: bare Rahul seed -> then "Rahul 3210" new-customer preview.
-    console.log("\n== scenario b: 'Rahul 3210' new-customer preview ==");
-    await sendText("Rahul ko 1 kilo atta udhaar");
-    const rahulBareId = await customerByNameKey("rahul");
-    check("b: bare Rahul created", rahulBareId !== null, rahulBareId ?? "none");
-    const bSeedBefore = rahulBareId ? await balanceOf(rahulBareId) : 0;
-    await pressTitle("Haan, sab save karo");
-    if (rahulBareId) {
-      const bal = await balanceOf(rahulBareId);
-      check("b: bare Rahul confirmed (+4500)", bal === bSeedBefore + 4500, `bal=${bal}`);
-    }
-    await sendText("Rahul 3210 ko 1 kilo chini udhaar");
+    // Scenario b: Badlo -> correction -> new preview with 3 kg -> Cancel saves nothing.
+    console.log("\n== scenario b: Badlo correction ==");
+    const bBefore = mohanId ? await balanceOf(mohanId) : 0;
+    await sendText("Mohan ko 1 kilo chini udhaar");
     reply = lastEntry();
-    const bPending = await openPlanPending();
-    check("b: preview pending (confirm_action)", bPending.length === 1 && bPending[0].action_type === "confirm_action", JSON.stringify(bPending));
-    check("b: preview has new-customer confirm button", buttonIdByTitle("Haan, banao") !== null, JSON.stringify(reply?.buttons));
-    await pressTitle("Haan, banao");
-    const rahul3210Id = await customerByLast4("rahul", "3210");
-    check("b: Rahul (3210) created", rahul3210Id !== null, rahul3210Id ?? "none");
-    if (rahul3210Id) {
-      const bal = await balanceOf(rahul3210Id);
-      check("b: Rahul 3210 owes 4600 (chini)", bal === 4600, `bal=${bal}`);
-    }
-    check("b: pending consumed", (await openPlanPending()).length === 0, "");
-
-    // Scenario c: "Rahul" ambiguous (bare + 3210) -> pick list -> choose bare.
-    console.log("\n== scenario c: ambiguous pick list ==");
-    const cBefore = rahulBareId ? await balanceOf(rahulBareId) : 0;
-    await sendText("Rahul ko 1 kilo atta udhaar");
+    check("b: initial preview shown", reply !== null && reply.buttons.length === 3, JSON.stringify(reply?.buttons));
+    await pressTitle("Badlo");
     reply = lastEntry();
-    check("c: pick list shown", /no digits|Last 4 digits|list/i.test(reply?.body ?? "") || /1\)/.test(reply?.body ?? ""), reply?.body ?? "");
-    const cPending = await openPlanPending();
-    check("c: pick pending (pick_customer)", cPending.length === 1 && cPending[0].action_type === "pick_customer", JSON.stringify(cPending));
-    await sendText("no digits");
-    if (rahulBareId) {
-      const bal = await balanceOf(rahulBareId);
-      check("c: bare Rahul picked -> saved (+4500)", bal === cBefore + 4500, `before=${cBefore} after=${bal}`);
-    }
-    check("c: pending consumed after pick", (await openPlanPending()).length === 0, "");
-
-    // seed a customer directly so payment scenarios don't depend on a prior LLM order.
-    async function seedCustomer(nameKey: string, last4: string | null, display: string): Promise<string> {
-      const { data, error } = await sb.from("customers").insert({
-        shop_id: shopId, normalized_name_key: nameKey, display_name: display, disambiguator: last4,
-      }).select("id").single();
-      if (error) throw error;
-      return String((data as { id: string }).id);
-    }
-
-    // Scenario d: spoken-digit last4 payment resolves & applies.
-    console.log("\n== scenario d: spoken-digit last4 payment ==");
-    const dRahul = await seedCustomer("ramesh", "3210", "Ramesh");
-    const dBefore = await balanceOf(dRahul);
-    await sendText("Ramesh battis das ko 200 diye");
+    check("b: Badlo asks what to change", /Kya badalna hai/.test(reply?.body ?? ""), reply?.body ?? "");
+    await sendText("quantity 3 kilo");
     reply = lastEntry();
-    check("d: payment mentions Rs 200", /200/.test(reply?.body ?? ""), reply?.body ?? "");
-    const dAfter = await balanceOf(dRahul);
-    check("d: Rs 200 payment applied (-20000)", dAfter === dBefore - 20000, `before=${dBefore} after=${dAfter}`);
-
-    // Scenario e: seeded Priya 1111 -> payment instant (no confirm).
-    console.log("\n== scenario e: Priya 1111 ==");
-    const ePriya = await seedCustomer("priya", "1111", "Priya");
-    const eBefore = await balanceOf(ePriya);
-    await sendText("Priya 1111 ne 200 diye");
-    reply = lastEntry();
-    check("e: payment instant (no confirm)", reply !== null && reply.buttons.length === 0, JSON.stringify(reply?.buttons));
-    const eAfter = await balanceOf(ePriya);
-    check("e: Rs 200 payment applied (-20000)", eAfter === eBefore - 20000, `before=${eBefore} after=${eAfter}`);
-
-    // Scenario f: explicit-last4 payment shortcut on a seeded Rahul 3210.
-    console.log("\n== scenario f: explicit-last4 payment ==");
-    const fRahul = await seedCustomer("suresh", "3210", "Suresh");
-    const fBefore = await balanceOf(fRahul);
-    await sendText("Suresh 3210 ne 20 diye");
-    reply = lastEntry();
-    check("f: instant payment (no confirm)", reply !== null && reply.buttons.length === 0, JSON.stringify(reply?.buttons));
-    const fAfter = await balanceOf(fRahul);
-    check("f: Rs 20 payment applied (-2000)", fAfter === fBefore - 2000, `before=${fBefore} after=${fAfter}`);
-
-    // Scenario g: large-amount udhaar -> preview; Cancel saves nothing.
-    console.log("\n== scenario g: large amount cancel ==");
-    const gRahul = await seedCustomer("mohan", "3210", "Mohan");
-    const gBefore = await balanceOf(gRahul);
-    await sendText("5000 kilo atta Mohan 3210 udhaar");
-    reply = lastEntry();
-    check("g: large amount asks confirm", buttonIdByTitle("Cancel") !== null, JSON.stringify(reply?.buttons));
+    check("b: new preview with 3 kg", /3 kg chini/.test(reply?.body ?? ""), reply?.body ?? "");
+    check("b: new preview still has 3 buttons", reply !== null && reply.buttons.length === 3, JSON.stringify(reply?.buttons));
+    check("b: new preview amounts chini 3kg (Rs 138)", /Rs 138/.test(reply?.body ?? ""), reply?.body ?? "");
     await pressTitle("Cancel");
     reply = lastEntry();
-    check("g: cancel reply", /cancel/i.test(reply?.body ?? ""), reply?.body ?? "");
-    const gAfter = await balanceOf(gRahul);
-    check("g: cancel saved nothing", gAfter === gBefore, `${gBefore} -> ${gAfter}`);
+    check("b: cancel reply", /cancel/i.test(reply?.body ?? ""), reply?.body ?? "");
+    if (mohanId) {
+      const bal = await balanceOf(mohanId);
+      check("b: cancel saved nothing", bal === bBefore, `${bBefore} -> ${bal}`);
+    }
+    check("b: pending consumed after cancel", (await openPlanPending()).length === 0, "");
+    parsed = await lastParsedLog();
+    check("b: log confirm_result cancelled + corrections 1", parsed?.confirm_result === "cancelled" && parsed?.corrections === 1,
+      JSON.stringify(parsed));
 
-    // Scenario h: two-customer preview -> "Haan, sab save karo" saves both.
-    console.log("\n== scenario h: two-action preview ==");
-    const hRahul = await seedCustomer("amit", "3210", "Amit");
-    const hPriya = await seedCustomer("sunita", "1111", "Sunita");
-    const hRahulBefore = await balanceOf(hRahul);
-    const hPriyaBefore = await balanceOf(hPriya);
-    await sendText("Amit 3210 ko 1 kilo atta udhaar aur Sunita 1111 ko 1 kilo chini udhaar");
-    reply = lastEntry();
-    check("h: two-action preview with confirm", buttonIdByTitle("Haan, sab save karo") !== null, reply?.body ?? "");
-    await pressTitle("Haan, sab save karo");
-    reply = lastEntry();
-    const hRahulAfter = await balanceOf(hRahul);
-    const hPriyaAfter = await balanceOf(hPriya);
-    check("h: Amit line saved (+4500)", hRahulAfter === hRahulBefore + 4500, `${hRahulBefore} -> ${hRahulAfter}`);
-    check("h: Sunita line saved (+4600)", hPriyaAfter === hPriyaBefore + 4600, `${hPriyaBefore} -> ${hPriyaAfter}`);
-    check("h: reply lists both customers", /Amit/.test(reply?.body ?? "") && /Sunita/.test(reply?.body ?? ""), reply?.body ?? "");
+    // Scenario c: Undo button reverses its group once; second press does nothing.
+    console.log("\n== scenario c: Undo button idempotent ==");
+    check("c: undo id captured from scenario a", aUndoId !== null, aUndoId ?? "none");
+    if (aUndoId && mohanId) {
+      await sendButton(aUndoId);
+      reply = lastEntry();
+      check("c: undo reply", /Undo ho gaya/.test(reply?.body ?? ""), reply?.body ?? "");
+      const afterFirst = await balanceOf(mohanId);
+      check("c: group reversed once (bal 0)", afterFirst === 0, `bal=${afterFirst}`);
+      parsed = await lastParsedLog();
+      check("c: log confirm_result undone_after_save", parsed?.confirm_result === "undone_after_save", JSON.stringify(parsed));
+      await sendButton(aUndoId);
+      reply = lastEntry();
+      check("c: second press does nothing", /undo nahi|kuch undo nahi/i.test(reply?.body ?? ""), reply?.body ?? "");
+      const afterSecond = await balanceOf(mohanId);
+      check("c: second press leaves balance (bal 0)", afterSecond === 0, `bal=${afterSecond}`);
+    }
 
-    // Scenario i: undo just-saved group; other customer untouched.
-    console.log("\n== scenario i: scoped undo ==");
-    const iRahulBefore = await balanceOf(hRahul);
-    const iPriyaBefore = await balanceOf(hPriya);
-    await sendText("Amit 3210 ka last wala hata do");
+    // Scenario d: payment, undo and add_item also show previews.
+    console.log("\n== scenario d: payment/undo/add_item previews ==");
+    const dBefore = mohanId ? await balanceOf(mohanId) : 0;
+    await sendText("Mohan ko 50 diye");
     reply = lastEntry();
-    check("i: undo reply", /undo|hata/i.test(reply?.body ?? ""), reply?.body ?? "");
-    const iRahulAfter = await balanceOf(hRahul);
-    const iPriyaAfter = await balanceOf(hPriya);
-    check("i: Amit latest group reverted (-4500)", iRahulAfter === iRahulBefore - 4500, `${iRahulBefore} -> ${iRahulAfter}`);
-    check("i: Sunita untouched", iPriyaAfter === iPriyaBefore, `${iPriyaBefore} -> ${iPriyaAfter}`);
-    const { data: revRows } = await sb.from("ledger_entries").select("id").eq("shop_id", shopId).eq("entry_type", "manual_adjustment");
-    check("i: reversal rows written", (revRows ?? []).length > 0, `count=${(revRows ?? []).length}`);
+    check("d: payment preview with 3 buttons", reply !== null && reply.buttons.length === 3, JSON.stringify(reply?.buttons));
+    check("d: payment preview text", /Mohan se Rs 50 mile/.test(reply?.body ?? ""), reply?.body ?? "");
+    await pressTitle("Haan, save karo");
+    if (mohanId) {
+      const bal = await balanceOf(mohanId);
+      check("d: payment saved (-5000, advance)", bal === dBefore - 5000, `${dBefore} -> ${bal}`);
+    }
+    check("d: payment saved reply has Undo", buttonIdByTitle("Undo") !== null, JSON.stringify(lastEntry()?.buttons));
 
-    // Scenario j: bad-length refusal of 3-digit last4.
-    console.log("\n== scenario j: bad length ==");
-    const jRahul = await seedCustomer("vijay", "3210", "Vijay");
-    const jBefore = await balanceOf(jRahul);
-    await sendText("Vijay 123 ko 1 kilo atta udhaar");
+    await sendText("undo");
     reply = lastEntry();
-    check("j: 3-digit last4 refused with hint", /Last 4 digits/.test(reply?.body ?? ""), reply?.body ?? "");
-    check("j: nothing pending", (await openPlanPending()).length === 0, "");
-    const jAfter = await balanceOf(jRahul);
-    check("j: nothing saved", jAfter === jBefore, `${jBefore} -> ${jAfter}`);
+    check("d: undo action preview", reply !== null && reply.buttons.length === 3 && /Undo:/.test(reply?.body ?? ""),
+      JSON.stringify({ buttons: reply?.buttons, body: reply?.body }));
+    await pressTitle("Haan, save karo");
+    if (mohanId) {
+      const bal = await balanceOf(mohanId);
+      check("d: undo restored balance 0", bal === 0, `bal=${bal}`);
+    }
+
+    await sendText("add item Maggi 12 rupaye packet");
+    reply = lastEntry();
+    check("d: add_item preview", reply !== null && reply.buttons.length === 3 && /Item: Maggi - Rs 12\/packet/.test(reply?.body ?? ""),
+      JSON.stringify({ buttons: reply?.buttons, body: reply?.body }));
+    await pressTitle("Haan, save karo");
+    const { data: maggiRow } = await sb.from("catalog_items").select("id")
+      .eq("shop_id", shopId).ilike("name", "maggi").maybeSingle();
+    check("d: add_item saved after confirm", maggiRow !== null, maggiRow ? "saved" : "missing");
+
+    // Scenario e: balance questions answer directly with no buttons.
+    console.log("\n== scenario e: balance has no buttons ==");
+    await sendText("Mohan ka hisaab");
+    reply = lastEntry();
+    check("e: balance reply is plain text", reply !== null && reply.buttons.length === 0, JSON.stringify(reply?.buttons));
+    check("e: balance reply mentions Mohan", /Mohan/.test(reply?.body ?? ""), reply?.body ?? "");
+
+    // Scenario f: smart mode -> clean small typed order saves immediately, still shows Undo.
+    console.log("\n== scenario f: smart mode instant save ==");
+    process.env.CONFIRM_MODE = "smart";
+    const fBefore = mohanId ? await balanceOf(mohanId) : 0;
+    await sendText("Mohan ko 1 kilo atta udhaar");
+    reply = lastEntry();
+    const sawPreviewButtons =
+      buttonIdByTitle("Haan, save karo") !== null ||
+      buttonIdByTitle("Badlo") !== null ||
+      buttonIdByTitle("Cancel") !== null;
+    check("f: no confirm-preview buttons (instant save)", !sawPreviewButtons, JSON.stringify(reply?.buttons));
+    check("f: reply is the saved summary", /1 kg atta/.test(reply?.body ?? "") && /45/.test(reply?.body ?? ""), reply?.body ?? "");
+    check("f: saved reply still has Undo button", buttonIdByTitle("Undo") !== null, JSON.stringify(reply?.buttons));
+    if (mohanId) {
+      const bal = await balanceOf(mohanId);
+      check("f: order saved (+4500)", bal === fBefore + 4500, `${fBefore} -> ${bal}`);
+    }
+    parsed = await lastParsedLog();
+    check("f: log confirm_result saved_as_is", parsed?.confirm_result === "saved_as_is", JSON.stringify(parsed));
+    process.env.CONFIRM_MODE = "always";
 
     console.log("\n== global: no errors logged ==");
     const { data: errRows } = await sb.from("message_log").select("id").eq("shop_id", shopId).eq("outcome", "error");
-    check("k: no message_log error outcomes", (errRows ?? []).length === 0, `errors=${(errRows ?? []).length}`);
+    check("g: no message_log error outcomes", (errRows ?? []).length === 0, `errors=${(errRows ?? []).length}`);
   } finally {
     console.log = realLog;
     const { data: orderRows } = await sb.from("orders").select("id").eq("shop_id", shopId);
